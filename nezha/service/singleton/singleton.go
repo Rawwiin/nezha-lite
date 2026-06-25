@@ -32,7 +32,6 @@ var (
 	ServiceSentinelShared *ServiceSentinel
 	DDNSShared            *DDNSClass
 	NotificationShared    *NotificationClass
-	CronShared            *CronClass
 )
 
 //go:embed frontend-templates.yaml
@@ -60,7 +59,6 @@ func LoadSingleton() (err error) {
 		return err
 	}
 	NotificationShared = NewNotificationClass()
-	CronShared = NewCronClass()
 	// 启动告警检查
 	go AlertSentinelStart()
 	return
@@ -103,7 +101,7 @@ func InitDBFromPath(path string) error {
 	err = DB.AutoMigrate(model.Server{}, model.User{}, model.ServerGroup{}, model.ServerGroupServer{},
 		model.WAF{}, model.JWTSession{}, model.APIToken{}, model.Service{}, model.ServiceHistory{},
 		model.Transfer{}, model.Notification{}, model.NotificationGroup{}, model.NotificationGroupNotification{},
-		model.Cron{}, model.AlertRule{})
+		model.AlertRule{})
 	if err != nil {
 		return err
 	}

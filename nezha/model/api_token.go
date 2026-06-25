@@ -12,7 +12,7 @@ import (
 
 // Scope 命名规范（唯一一套）：nezha:{resource}:{verb}
 //
-//   - resource: inventory / server / service / alertrule / cron / ddns / nat /
+//   - resource: inventory / server / service / alertrule / ddns / nat /
 //     notification / notification-group / transfer / admin
 //   - verb: read / write / delete / exec
 //

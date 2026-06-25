@@ -30,12 +30,10 @@ func (s *concurrencyTrackingResultSink) send(*pb.TaskResult) error {
 }
 
 // gRPC Go ClientStream forbids concurrent SendMsg
-// (https://pkg.go.dev/google.golang.org/grpc#ClientStream). dispatchAgentTask
-// fans every non-blocking task out to `go runAgentTask`, and each goroutine
-// calls send(result) on the SAME RequestTask stream. The MCP exec/fs.* tasks
-// are dashboard-driven and routinely overlap, so two results can hit
-// stream.Send concurrently and corrupt the stream. Every result Send must
-// route through one per-stream serializer so concurrent callers queue.
+// (https://pkg.go.dev/google.golang.org/grpc#ClientStream). receiveTasksDaemon
+// 把每个任务 fan out 到 `go runAgentTask`，每个 goroutine 都在同一个
+// RequestTask 流上调用 send(result)。多个任务结果可能并发到达 stream.Send
+// 并损坏流。所有结果 Send 必须经过一个 per-stream 串行化器排队。
 func TestSerialTaskResultSender_GuaranteesAtMostOneSendInFlight(t *testing.T) {
 	sink := &concurrencyTrackingResultSink{}
 	send := newSerialTaskResultSender(sink.send)
