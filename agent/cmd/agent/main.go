@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/tls"
 	"errors"
+	"flag"
 	"fmt"
 	"io"
 	"log"
@@ -25,16 +26,19 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/resolver"
 
+	"github.com/nezhahq/agent/cmd/agent/commands"
 	"github.com/nezhahq/agent/model"
 	"github.com/nezhahq/agent/pkg/logger"
 	"github.com/nezhahq/agent/pkg/monitor"
 	"github.com/nezhahq/agent/pkg/util"
 	utlsx "github.com/nezhahq/agent/pkg/utls"
 	pb "github.com/nezhahq/agent/proto"
+	"github.com/nezhahq/service"
 )
 
 var (
 	version               = monitor.Version // 构建时注入的版本号
+	executablePath        string            // 可执行文件路径，runService 用于生成服务名
 	defaultConfigPath     = loadDefaultConfigPath()
 	agentConfig           model.AgentConfig
 	client                pb.NezhaServiceClient
@@ -46,6 +50,9 @@ var (
 
 	hostStatus atomic.Bool
 	ipStatus   atomic.Bool
+
+	// icmpSem 限制同时执行的 ICMP Ping 任务数，防止高频下发导致 Agent 成为 DDoS 放大器
+	icmpSem = make(chan struct{}, 3)
 
 	httpClient = &http.Client{
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
@@ -94,7 +101,8 @@ func setEnv() {
 }
 
 func loadDefaultConfigPath() string {
-	executablePath, err := os.Executable()
+	var err error
+	executablePath, err = os.Executable()
 	if err != nil {
 		return ""
 	}
@@ -132,6 +140,9 @@ func preRun(configPath string) error {
 		return fmt.Errorf("init config failed: %v", err)
 	}
 
+	// 根据配置初始化日志开关：debug=false 时静默运行，debug=true（默认）输出全部日志
+	logger.SetEnable(agentConfig.Debug)
+
 	// 初始化 monitor 配置
 	monitor.InitConfig(&agentConfig)
 	monitor.CustomEndpoints = agentConfig.CustomIPApi
@@ -140,16 +151,114 @@ func preRun(configPath string) error {
 }
 
 func main() {
-	configPath := ""
-	if len(os.Args) > 2 && os.Args[1] == "-c" {
-		configPath = os.Args[2]
+	// 子命令模式：nezha-agent service <install/uninstall/start/stop/restart>
+	if len(os.Args) >= 2 && os.Args[1] == "service" {
+		serviceCmd := flag.NewFlagSet("service", flag.ExitOnError)
+		serviceConfig := serviceCmd.String("c", "", "配置文件路径")
+		serviceCmd.Parse(os.Args[2:])
+
+		action := serviceCmd.Arg(0)
+		if action == "" {
+			log.Fatal("必须指定一个参数: install/uninstall/start/stop/restart")
+		}
+
+		// 确定配置文件路径
+		configPath := *serviceConfig
+		if configPath == "" {
+			configPath = defaultConfigPath
+		}
+		ap, _ := filepath.Abs(configPath)
+
+		if err := preRun(ap); err != nil {
+			log.Fatal(err)
+		}
+		runService(action, ap)
+		return
 	}
+
+	// 普通模式：nezha-agent [-c config.yml]
+	configPath := ""
+	flag.StringVar(&configPath, "c", "", "配置文件路径")
+	flag.Parse()
 
 	if err := preRun(configPath); err != nil {
 		log.Fatal(err)
 	}
 
-	run()
+	// 通过 service 框架运行（空 action = 前台运行）
+	runService("", "")
+}
+
+// runService 通过 service 框架管理 Agent 的系统服务生命周期
+// action 为空时以前台模式运行；非空时执行 install/uninstall/start/stop/restart
+func runService(action string, path string) {
+	// Windows 服务失败后自动重启
+	winConfig := map[string]interface{}{
+		"OnFailure": "restart",
+	}
+
+	args := []string{"-c", path}
+	name := filepath.Base(executablePath)
+	// 非默认配置路径时，在服务名后追加路径哈希以区分多实例
+	if path != defaultConfigPath && path != "" {
+		hex := util.MD5Sum(path)[:7]
+		name = fmt.Sprintf("%s-%s", name, hex)
+	}
+
+	svcConfig := &service.Config{
+		Name:             name,
+		DisplayName:      filepath.Base(executablePath),
+		Arguments:        args,
+		Description:      "哪吒监控 Agent",
+		WorkingDirectory: filepath.Dir(executablePath),
+		Option:           winConfig,
+	}
+
+	prg := &commands.Program{
+		Exit: make(chan struct{}),
+		Run:  run,
+	}
+	s, err := service.New(prg, svcConfig)
+	if err != nil {
+		// service 框架不可用时退化为普通模式运行
+		printf("创建服务时出错，以普通模式运行: %v", err)
+		run()
+		return
+	}
+	prg.Service = s
+
+	// 尝试使用系统服务日志，失败时退化为控制台日志
+	serviceLogger, err := logger.NewNezhaServiceLogger(s, nil)
+	if err != nil {
+		printf("获取 service logger 时出错: %+v", err)
+		logger.InitDefaultLogger(agentConfig.Debug, service.ConsoleLogger)
+	} else {
+		logger.InitDefaultLogger(agentConfig.Debug, serviceLogger)
+	}
+
+	// install 时提前读取配置并打印 init 系统类型
+	if action == "install" {
+		initName := s.Platform()
+		if err := agentConfig.Read(path); err != nil {
+			log.Fatalf("init config failed: %v", err)
+		}
+		printf("Init system is: %s", initName)
+	}
+
+	// 非空 action 执行服务控制命令后退出
+	if len(action) != 0 {
+		err := service.Control(s, action)
+		if err != nil {
+			log.Fatal(err)
+		}
+		return
+	}
+
+	// 空 action：前台运行服务
+	err = s.Run()
+	if err != nil {
+		printf("服务运行出错: %v", err)
+	}
 }
 
 // run 主循环：与 Dashboard 建立 gRPC 连接，上报状态并接收/执行延迟检测任务
@@ -242,7 +351,11 @@ func run() {
 	}
 }
 
-// doWithTimeout 带超时的函数包装器
+// doWithTimeout 带超时的函数包装器。
+// 仅用于 gRPC stream 操作（Send/Recv）——这些方法不接受 context 参数，
+// 只能通过取消 stream 的 context 来解除阻塞。超时后内部 goroutine 会短暂泄漏，
+// 直到调用方收到错误后取消 stream context（wCancel），goroutine 才会退出。
+// gRPC unary 调用应直接使用 context.WithTimeout，不要用此函数。
 func doWithTimeout[T any](fn func() (T, error), timeout time.Duration) (T, error) {
 	var result T
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
@@ -320,9 +433,11 @@ func reportHost() bool {
 	}
 	defer hostStatus.Store(false)
 	if client != nil && initialized {
-		receipt, err := doWithTimeout(func() (*pb.Uint64Receipt, error) {
-			return client.ReportSystemInfo2(context.Background(), monitor.GetHost().PB())
-		}, time.Second*10)
+		// 使用带超时的 context 直接调用 gRPC unary API，
+		// 避免旧实现中 doWithTimeout+context.Background() 导致超时后 goroutine 永久泄漏
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second*10)
+		defer cancel()
+		receipt, err := client.ReportSystemInfo2(ctx, monitor.GetHost().PB())
 		if err != nil {
 			printf("ReportSystemInfo2 error: %v", err)
 			return false
@@ -351,9 +466,11 @@ func reportGeoIP(use6, forceUpdate bool) bool {
 		return true
 	}
 
-	geoip, err := doWithTimeout(func() (*pb.GeoIP, error) {
-		return client.ReportGeoIP(context.Background(), pbg)
-	}, time.Second*10)
+	// 使用带超时的 context 直接调用 gRPC unary API，
+	// 避免旧实现中 doWithTimeout+context.Background() 导致超时后 goroutine 永久泄漏
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second*10)
+	defer cancel()
+	geoip, err := client.ReportGeoIP(ctx, pbg)
 	if err != nil {
 		return false
 	}
@@ -477,6 +594,13 @@ func handleTcpPingTask(task *pb.Task, result *pb.TaskResult) {
 		result.Data = err.Error()
 		return
 	}
+	// 内网探测防护：校验解析后的 IP，阻止探测内网/保留地址
+	if !agentConfig.AllowProbeInternal {
+		if err := validateResolvedIP(ipAddr); err != nil {
+			result.Data = err.Error()
+			return
+		}
+	}
 	addr := net.JoinHostPort(ipAddr, port)
 	printf("TCP-Ping Task: Pinging %s", addr)
 	start := time.Now()
@@ -498,9 +622,24 @@ func handleIcmpPingTask(task *pb.Task, result *pb.TaskResult) {
 	}
 
 	ipAddr, err := lookupIP(task.GetData())
-	printf("ICMP-Ping Task: Pinging %s(%s)", task.GetData(), ipAddr)
 	if err != nil {
 		result.Data = err.Error()
+		return
+	}
+	// 内网探测防护：校验解析后的 IP，阻止探测内网/保留地址
+	if !agentConfig.AllowProbeInternal {
+		if err := validateResolvedIP(ipAddr); err != nil {
+			result.Data = err.Error()
+			return
+		}
+	}
+	printf("ICMP-Ping Task: Pinging %s(%s)", task.GetData(), ipAddr)
+	// 并发限制：最多同时执行 3 个 ICMP 任务，超出时直接拒绝，防止 DDoS 放大
+	select {
+	case icmpSem <- struct{}{}:
+		defer func() { <-icmpSem }()
+	default:
+		result.Data = "too many concurrent ICMP tasks"
 		return
 	}
 	pinger, err := ping.NewPinger(ipAddr)
@@ -529,13 +668,21 @@ func handleHttpGetTask(task *pb.Task, result *pb.TaskResult) {
 		result.Data = "This server has disabled query sending"
 		return
 	}
-	start := time.Now()
 	taskUrl := task.GetData()
-	resp, err := httpClient.Get(taskUrl)
+	// SSRF 防护：校验 URL 协议和目标地址，阻止探测内网/保留地址
+	if !agentConfig.AllowProbeInternal {
+		if err := validateProbeURL(taskUrl); err != nil {
+			result.Data = err.Error()
+			return
+		}
+	}
+	start := time.Now()
 	printf("HTTP-GET Task: %s", taskUrl)
+	resp, err := httpClient.Get(taskUrl)
 	if err == nil {
 		defer resp.Body.Close()
-		_, err = io.Copy(io.Discard, resp.Body)
+		// 限制响应体读取大小为 1MB，防止恶意大文件导致内存耗尽
+		_, err = io.Copy(io.Discard, io.LimitReader(resp.Body, 1<<20))
 	}
 	if err == nil {
 		result.Delay = float32(time.Since(start).Microseconds()) / 1000.0

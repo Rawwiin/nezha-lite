@@ -5,10 +5,12 @@ import (
 	"crypto/tls"
 	"embed"
 	"errors"
+	"flag"
 	"fmt"
 	"log"
 	"net"
 	"net/http"
+	"os"
 	"runtime/debug"
 	"strings"
 	"time"
@@ -26,7 +28,15 @@ import (
 	"github.com/nezhahq/nezha/service/singleton"
 )
 
+// DashboardCliParam 保存命令行参数
+type DashboardCliParam struct {
+	Version          bool   // -v：查看当前版本号
+	ConfigFile       string // -c：配置文件路径
+	DatabaseLocation string // -db：SQLite 数据库文件路径
+}
+
 var (
+	dashboardCliParam DashboardCliParam
 	//go:embed *-dist
 	frontendDist embed.FS
 )
@@ -91,11 +101,20 @@ func initIDCodec() error {
 // @externalDocs.description  OpenAPI
 // @externalDocs.url          https://swagger.io/resources/open-api/
 func main() {
-	configFile := "data/config.yaml"
-	databaseLocation := "data/sqlite.db"
+	// 命令行参数解析（与原版保持一致）
+	flag.BoolVar(&dashboardCliParam.Version, "v", false, "查看当前版本号")
+	flag.StringVar(&dashboardCliParam.ConfigFile, "c", "data/config.yaml", "配置文件路径")
+	flag.StringVar(&dashboardCliParam.DatabaseLocation, "db", "data/sqlite.db", "Sqlite3数据库文件路径")
+	flag.Parse()
+
+	// -v：打印版本号后立即退出
+	if dashboardCliParam.Version {
+		fmt.Println(singleton.Version)
+		os.Exit(0)
+	}
 
 	if err := utils.FirstError(singleton.InitFrontendTemplates,
-		func() error { return singleton.InitConfigFromPath(configFile) },
+		func() error { return singleton.InitConfigFromPath(dashboardCliParam.ConfigFile) },
 		initIDCodec,
 		singleton.InitTimezoneAndCache,
 		func() error {
@@ -105,7 +124,7 @@ func main() {
 			}
 			return nil
 		},
-		func() error { return singleton.InitDBFromPath(databaseLocation) },
+		func() error { return singleton.InitDBFromPath(dashboardCliParam.DatabaseLocation) },
 		singleton.InitTSDB,
 		initSystem); err != nil {
 		log.Fatal(err)

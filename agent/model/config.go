@@ -35,6 +35,7 @@ type AgentConfig struct {
 	InsecureTLS                 bool            `koanf:"insecure_tls" json:"insecure_tls"`                   // 是否禁用证书检查
 	UseIPv6CountryCode          bool            `koanf:"use_ipv6_country_code" json:"use_ipv6_country_code"` // 默认优先展示IPv6旗帜
 	DisableSendQuery            bool            `koanf:"disable_send_query" json:"disable_send_query"`       // 关闭发送TCP/ICMP/HTTP请求
+	AllowProbeInternal          bool            `koanf:"allow_probe_internal" json:"allow_probe_internal"`   // 允许探测内网/保留地址（默认拒绝，防 SSRF）
 	IPReportPeriod              uint32          `koanf:"ip_report_period" json:"ip_report_period"`           // IP上报周期
 	CustomIPApi                 []string        `koanf:"custom_ip_api" json:"custom_ip_api,omitempty"`       // 自定义 IP API
 
