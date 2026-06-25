@@ -4,7 +4,6 @@ go 1.26
 
 require (
 	github.com/cloudflare/ahocorasick v0.0.0-20240916140611-054963ec9396
-	github.com/fsnotify/fsnotify v1.10.1
 	github.com/hashicorp/go-uuid v1.0.3
 	github.com/jaypipes/ghw v0.24.0
 	github.com/knadh/koanf/providers/env v1.1.0
@@ -26,6 +25,7 @@ require (
 	github.com/antihax/optional v1.0.0 // indirect
 	github.com/cpuguy83/go-md2man/v2 v2.0.7 // indirect
 	github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc // indirect
+	github.com/fsnotify/fsnotify v1.10.1 // indirect
 	github.com/go-ole/go-ole v1.3.0 // indirect
 	github.com/go-viper/mapstructure/v2 v2.5.0 // indirect
 	github.com/google/go-github v17.0.0+incompatible // indirect

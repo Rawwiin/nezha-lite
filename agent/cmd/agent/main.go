@@ -47,8 +47,7 @@ var (
 	hostStatus atomic.Bool
 	ipStatus   atomic.Bool
 
-	dnsResolver = &net.Resolver{PreferGo: true}
-	httpClient  = &http.Client{
+	httpClient = &http.Client{
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
 			return http.ErrUseLastResponse
 		},

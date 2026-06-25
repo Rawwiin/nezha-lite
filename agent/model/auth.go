@@ -5,27 +5,18 @@ import (
 	"errors"
 )
 
-// AuthHandler attaches the agent's identity to every outbound gRPC call.
-// Credentials is a single closure returning a coherent (secret, uuid) pair so
-// a dashboard-initiated rotation (server transfer / ownership swap) cannot be
-// observed mid-swap as a torn (oldUUID, newSecret) pair. Each gRPC dial calls
-// Credentials once; a save-first-then-publish reload in the agent is enough
-// to switch credentials atomically.
+// AuthHandler 将 Agent 身份凭据（ClientSecret + UUID）附加到每次出站 gRPC 调用。
+// Credentials 闭包返回一致的 (secret, uuid) 对，供 gRPC dial 在建立连接时读取。
 type AuthHandler struct {
 	Credentials func() (secret, uuid string)
-	// RequireTLS reports whether the agent's transport must be encrypted, read
-	// from the live agent config so plaintext intranet deployments (TLS:false)
-	// keep working while TLS-enabled agents refuse to leak credentials over a
-	// cleartext channel. nil means "do not require TLS" (legacy behaviour).
+	// RequireTLS 报告 Agent 传输是否必须加密：TLS:false 的内网明文部署继续工作，
+	// TLS:true 的 Agent 拒绝在明文信道上泄露凭据。nil 表示不要求 TLS（兼容旧行为）。
 	RequireTLS func() bool
 }
 
-// ErrAuthCredentialsNotConfigured surfaces from gRPC dial metadata when an
-// AuthHandler has been constructed without a Credentials closure (e.g. zero
-// value, or a refactor that forgot to wire publishCredentials). Returning an
-// error instead of panicking keeps the gRPC client loop alive so the
-// supervisor can log and retry — a nil dereference would crash the agent
-// process and cause unattended hosts to flap.
+// ErrAuthCredentialsNotConfigured 在 AuthHandler 未配置 Credentials 闭包时返回。
+// 返回 error 而非 panic 可保持 gRPC 客户端循环存活，让 supervisor 记录日志并重试——
+// nil 解引用会崩溃 Agent 进程并导致无人值守主机反复抖动。
 var ErrAuthCredentialsNotConfigured = errors.New("agent: AuthHandler.Credentials closure is not configured")
 
 func (a *AuthHandler) GetRequestMetadata(ctx context.Context, uri ...string) (map[string]string, error) {

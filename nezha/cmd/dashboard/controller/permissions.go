@@ -4,25 +4,8 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"github.com/nezhahq/nezha/model"
-	"github.com/nezhahq/nezha/service/rpc"
 	"github.com/nezhahq/nezha/service/singleton"
 )
-
-// streamAttachAllowedForRequest combines the existing creator/admin check
-// with a per-request PAT whitelist gate against the stream's target server.
-// Terminal and FM endpoints attach to a long-lived stream and inherit any
-// authority the creator held — without the second gate an admin's PAT
-// scoped to [X] could hijack a stream targeting server Y.
-func streamAttachAllowedForRequest(c *gin.Context, streamId string) bool {
-	if !rpc.NezhaHandlerSingleton.IsStreamAuthorizedForUser(streamId, getUid(c), callerIsAdmin(c)) {
-		return false
-	}
-	target, ok := rpc.NezhaHandlerSingleton.StreamTarget(streamId)
-	if !ok {
-		return false
-	}
-	return patAllowsServer(c, target)
-}
 
 func callerIsAdmin(c *gin.Context) bool {
 	auth, ok := c.Get(model.CtxKeyAuthorizedUser)

@@ -6,12 +6,12 @@ import (
 	"fmt"
 	"log"
 	"net"
-	"sync"
 	"time"
 
 	geoipx "github.com/nezhahq/nezha/pkg/geoip"
-	"github.com/nezhahq/nezha/pkg/grpcx"
 	"github.com/nezhahq/nezha/pkg/tsdb"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 
 	"github.com/nezhahq/nezha/model"
 	pb "github.com/nezhahq/nezha/proto"
@@ -22,17 +22,15 @@ var _ pb.NezhaServiceServer = (*NezhaHandler)(nil)
 
 var NezhaHandlerSingleton *NezhaHandler
 
+// NezhaHandler 实现 gRPC NezhaService 服务端接口
+// 精简版已移除 IOStream（终端/文件管理/内网穿透/MCP）功能
 type NezhaHandler struct {
-	Auth          *authHandler
-	ioStreams     map[string]*ioStreamContext
-	ioStreamMutex *sync.RWMutex
+	Auth *authHandler
 }
 
 func NewNezhaHandler() *NezhaHandler {
 	return &NezhaHandler{
-		Auth:          &authHandler{},
-		ioStreamMutex: new(sync.RWMutex),
-		ioStreams:     make(map[string]*ioStreamContext),
+		Auth: &authHandler{},
 	}
 }
 
@@ -194,11 +192,9 @@ func (s *NezhaHandler) onReportSystemInfo(c context.Context, r *pb.Host) error {
 	return nil
 }
 
+// ReportSystemInfo (v1) 已废弃：Agent 端只使用 ReportSystemInfo2，保留桩以满足 gRPC 接口
 func (s *NezhaHandler) ReportSystemInfo(c context.Context, r *pb.Host) (*pb.Receipt, error) {
-	if err := s.onReportSystemInfo(c, r); err != nil {
-		return nil, err
-	}
-	return &pb.Receipt{Proced: true}, nil
+	return nil, status.Errorf(codes.Unimplemented, "ReportSystemInfo is deprecated, use ReportSystemInfo2")
 }
 
 func (s *NezhaHandler) ReportSystemInfo2(c context.Context, r *pb.Host) (*pb.Uint64Receipt, error) {
@@ -208,73 +204,9 @@ func (s *NezhaHandler) ReportSystemInfo2(c context.Context, r *pb.Host) (*pb.Uin
 	return &pb.Uint64Receipt{Data: singleton.DashboardBootTime}, nil
 }
 
+// IOStream 已移除：精简版不再支持终端/文件管理/内网穿透/MCP 流通道
 func (s *NezhaHandler) IOStream(stream pb.NezhaService_IOStreamServer) error {
-	clientID, err := s.Auth.Check(stream.Context())
-	if err != nil {
-		return err
-	}
-	id, err := stream.Recv()
-	if err != nil {
-		return err
-	}
-
-	// ff05ff05 是 Nezha 的魔数，用于标识流 ID。校验由 isValidIOStreamMagic 完成，
-	// 历史 inline 检查曾因 && 短路放过几乎全部非魔数 payload (byte0==0xff 即通过)。
-	if id == nil || !isValidIOStreamMagic(id.Data) {
-		return fmt.Errorf("invalid stream id")
-	}
-
-	streamId := string(id.Data[4:])
-
-	// agent 侧归属校验：只有 createTerminal / createFM / ServeNAT 选定的目标 server
-	// 才能接管该 stream。漏掉这一步等同于把 terminal / fm / NAT 会话向所有合法 agent
-	// 开放（任何获得 streamId 的 agent 都能抢答），构成 session-hijack RCE 中介。
-	// 这是 commit 6661d6a（user 侧归属校验）的对偶补丁。先校验后启 keepalive，
-	// 避免未授权 agent 触发悬空 goroutine 持续向其发心跳。
-	if !s.IsStreamAuthorizedForAgent(streamId, clientID) {
-		return fmt.Errorf("stream not authorized for agent")
-	}
-
-	if _, err := s.GetStream(streamId); err != nil {
-		return err
-	}
-	iw := grpcx.NewIOStreamWrapper(stream)
-
-	// Keepalive MUST go through the wrapper so it shares the same sendMu as
-	// MCP fs.transfer / terminal / fm Writers. Calling stream.Send directly
-	// here used to race those Writers — grpc-go forbids concurrent SendMsg
-	// on the same stream. The wrapper's sendMu is the dashboard-side dual
-	// of agent/cmd/agent/mcp_fs_transfer.go's serialIOStreamSender.
-	keepaliveDone := make(chan struct{})
-	go func() {
-		defer close(keepaliveDone)
-		ticker := time.NewTicker(time.Second * 30)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-iw.Context().Done():
-				return
-			case <-iw.Done():
-				// 业务侧（CloseStream / RevokeStreamsForPurpose）调过
-				// iw.Close()。即便底层 gRPC stream context 尚未取消，也
-				// 必须立刻收手——否则要再等一整个 30s tick，handler 在
-				// iw.Wait() 之后又得多等一拍 keepaliveDone 才能返回。
-				return
-			case <-ticker.C:
-				if err := iw.SendKeepalive(); err != nil {
-					log.Printf("NEZHA>> IOStream keepAlive error: %v\n", err)
-					return
-				}
-			}
-		}
-	}()
-
-	if err := s.AgentConnected(streamId, iw); err != nil {
-		return err
-	}
-	iw.Wait()
-	<-keepaliveDone
-	return nil
+	return status.Errorf(codes.Unimplemented, "IOStream has been removed in simplified build")
 }
 
 func (s *NezhaHandler) ReportGeoIP(c context.Context, r *pb.GeoIP) (*pb.GeoIP, error) {

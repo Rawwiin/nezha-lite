@@ -20,7 +20,7 @@ import (
 )
 
 func ServeRPC() *grpc.Server {
-	// Streaming RPCs (RequestTask, IOStream) need the same real-IP + WAF
+	// Streaming RPCs (RequestTask, ReportSystemState) need the same real-IP + WAF
 	// gate as unary calls; without the stream interceptors authHandler.check
 	// sees an empty real IP, so brute-force BlockIP counters never key on a
 	// source and the WAF block table is bypassed at the stream entrypoint.
@@ -132,4 +132,3 @@ func DispatchKeepalive() {
 		}
 	}()
 }
-
