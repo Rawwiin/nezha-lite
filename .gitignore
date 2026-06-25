@@ -1,0 +1,75 @@
+# ========================
+# 编译产物
+# ========================
+*.exe
+*.dll
+*.so
+*.dylib
+agent/nezha-agent*
+agent/agent*
+nezha/nezha-dashboard*
+nezha/dashboard*
+
+# ========================
+# 数据与日志
+# ========================
+data/
+*.db
+*.db-journal
+*.log
+*.tmp
+*.pid
+*.sock
+
+# ========================
+# 原版源码备份（不提交）
+# ========================
+source/
+
+# ========================
+# 根目录 Markdown（README.md 除外）
+# ========================
+/*.md
+!README.md
+
+# ========================
+# Go
+# ========================
+vendor/
+*.test
+*.out
+*.cover
+coverage/
+
+# ========================
+# 前端
+# ========================
+node_modules/
+*.lock
+package-lock.json
+yarn.lock
+pnpm-lock.yaml
+*.map
+
+# ========================
+# IDE / 编辑器
+# ========================
+.vscode/
+.idea/
+*.swp
+*.swo
+*.swn
+*.bak
+*.orig
+*~
+.DS_Store
+Thumbs.db
+
+# ========================
+# 临时文件
+# ========================
+tmp/
+temp/
+dist/
+build/
+release/

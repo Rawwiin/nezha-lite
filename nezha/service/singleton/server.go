@@ -1,0 +1,159 @@
+package singleton
+
+import (
+	"cmp"
+	"context"
+	"slices"
+	"strings"
+
+	"github.com/nezhahq/nezha/model"
+	ddns2 "github.com/nezhahq/nezha/pkg/ddns"
+	"github.com/nezhahq/nezha/pkg/utils"
+)
+
+type ServerClass struct {
+	class[uint64, *model.Server]
+
+	uuidToID map[string]uint64
+
+	sortedListForGuest []*model.Server
+}
+
+func NewServerClass() *ServerClass {
+	sc := &ServerClass{
+		class: class[uint64, *model.Server]{
+			list: make(map[uint64]*model.Server),
+		},
+		uuidToID: make(map[string]uint64),
+	}
+
+	var servers []model.Server
+	DB.Find(&servers)
+	for _, s := range servers {
+		innerS := s
+		model.InitServer(&innerS)
+		sc.list[innerS.ID] = &innerS
+		sc.uuidToID[innerS.UUID] = innerS.ID
+	}
+	sc.sortList()
+
+	model.OwnerServerIDsLookup = sc.ownerServerIDs
+	model.AllServerIDsLookup = sc.allServerIDs
+	model.OwnerIsAdminLookup = ownerIsAdmin
+
+	return sc
+}
+
+func (c *ServerClass) ownerServerIDs(ownerUID uint64) []uint64 {
+	var ids []uint64
+	c.Range(func(id uint64, s *model.Server) bool {
+		if s != nil && s.GetUserID() == ownerUID {
+			ids = append(ids, id)
+		}
+		return true
+	})
+	return ids
+}
+
+func (c *ServerClass) allServerIDs() []uint64 {
+	var ids []uint64
+	c.Range(func(id uint64, s *model.Server) bool {
+		if s != nil {
+			ids = append(ids, id)
+		}
+		return true
+	})
+	return ids
+}
+
+func ownerIsAdmin(ownerUID uint64) bool {
+	return userIsAdmin(ownerUID)
+}
+
+func (c *ServerClass) Update(s *model.Server, uuid string) {
+	c.listMu.Lock()
+
+	c.list[s.ID] = s
+	if uuid != "" {
+		c.uuidToID[uuid] = s.ID
+	}
+
+	c.listMu.Unlock()
+
+	c.sortList()
+}
+
+func (c *ServerClass) Delete(idList []uint64) {
+	c.listMu.Lock()
+
+	for _, id := range idList {
+		s, ok := c.list[id]
+		if !ok {
+			continue
+		}
+		delete(c.uuidToID, s.UUID)
+		delete(c.list, id)
+	}
+
+	c.listMu.Unlock()
+
+	c.sortList()
+}
+
+func (c *ServerClass) GetSortedListForGuest() []*model.Server {
+	c.sortedListMu.RLock()
+	defer c.sortedListMu.RUnlock()
+
+	return slices.Clone(c.sortedListForGuest)
+}
+
+func (c *ServerClass) UUIDToID(uuid string) (id uint64, ok bool) {
+	c.listMu.RLock()
+	defer c.listMu.RUnlock()
+
+	id, ok = c.uuidToID[uuid]
+	return
+}
+
+// UpdateDDNS 根据服务器的 DDNS 配置更新 DNS 记录
+func (c *ServerClass) UpdateDDNS(server *model.Server, ip *model.IP) error {
+	confServers := strings.Split(Conf.DNSServers, ",")
+	ctx := context.WithValue(context.Background(), ddns2.DNSServerKey{}, utils.IfOr(confServers[0] != "", confServers, utils.DNSServers))
+
+	providers, err := DDNSShared.GetDDNSProvidersFromProfiles(server.DDNSProfiles, utils.IfOr(ip != nil, ip, &server.GeoIP.IP), server.GetUserID())
+	if err != nil {
+		return err
+	}
+
+	for _, provider := range providers {
+		domains := server.OverrideDDNSDomains[provider.GetProfileID()]
+		go func(provider *ddns2.Provider) {
+			provider.UpdateDomain(ctx, domains...)
+		}(provider)
+	}
+
+	return nil
+}
+
+func (c *ServerClass) sortList() {
+	c.listMu.RLock()
+	defer c.listMu.RUnlock()
+	c.sortedListMu.Lock()
+	defer c.sortedListMu.Unlock()
+
+	c.sortedList = utils.MapValuesToSlice(c.list)
+	// 按照服务器 ID 排序的具体实现（ID越大越靠前）
+	slices.SortStableFunc(c.sortedList, func(a, b *model.Server) int {
+		if a.DisplayIndex == b.DisplayIndex {
+			return cmp.Compare(a.ID, b.ID)
+		}
+		return cmp.Compare(b.DisplayIndex, a.DisplayIndex)
+	})
+
+	c.sortedListForGuest = make([]*model.Server, 0, len(c.sortedList))
+	for _, s := range c.sortedList {
+		if !s.HideForGuest {
+			c.sortedListForGuest = append(c.sortedListForGuest, s)
+		}
+	}
+}

@@ -1,0 +1,411 @@
+package controller
+
+import (
+	"errors"
+	"fmt"
+	"io"
+	"io/fs"
+	"log"
+	"net/http"
+	"os"
+	"regexp"
+	"slices"
+	"strings"
+
+	jwt "github.com/appleboy/gin-jwt/v2"
+	"github.com/gin-gonic/gin"
+
+	"github.com/nezhahq/nezha/cmd/dashboard/controller/waf"
+	"github.com/nezhahq/nezha/model"
+	"github.com/nezhahq/nezha/pkg/utils"
+	"github.com/nezhahq/nezha/service/singleton"
+)
+
+// ServeWeb 启动 Web 服务，frontendDist 为嵌入的前端构建产物
+func ServeWeb(frontendDist fs.FS) http.Handler {
+	gin.SetMode(gin.ReleaseMode)
+	r := gin.Default()
+
+	r.Use(waf.RealIp)
+	r.Use(waf.Waf)
+	r.Use(recordPath)
+
+	routers(r, frontendDist)
+	return r
+}
+
+func routers(r *gin.Engine, frontendDist fs.FS) {
+	authMiddleware, err := jwt.New(initParams())
+	if err != nil {
+		log.Fatal("JWT Error:" + err.Error())
+	}
+	if err := authMiddleware.MiddlewareInit(); err != nil {
+		log.Fatal("authMiddleware.MiddlewareInit Error:" + err.Error())
+	}
+	api := r.Group("api/v1")
+	api.POST("/login", authMiddleware.LoginHandler)
+
+	fallbackAuthMw := fallbackAuthMiddleware(authMiddleware)
+	fallbackAuth := api.Group("", fallbackAuthMw)
+	fallbackAuth.GET("/setting", commonHandler(listConfig))
+
+	jwtMw := authMiddleware.MiddlewareFunc()
+	patMw := apiTokenAuthMiddleware()
+	authMw := jwtOrPATAuthMiddleware(patMw, jwtMw)
+	// optional 路由：ForceAuth=true 走严格 PAT-or-JWT；ForceAuth=false 走
+	// PAT-or-FallbackJWT，保证两种模式下 PAT 都会被解析，restScopeMiddleware
+	// 才能按 scope 真实收口（否则匿名 PAT 请求会被当 guest，scope 失效）。
+	optionalAuthMw := utils.IfOr(singleton.Conf.ForceAuth, authMw, patOrFallbackAuthMiddleware(patMw, fallbackAuthMw))
+
+	optionalAuth := api.Group("", optionalAuthMw)
+	optionalAuth.GET("/ws/server", restScopeMiddleware(model.ScopeInventoryRead), commonHandler(serverStream))
+	optionalAuth.GET("/server-group", restScopeMiddleware(model.ScopeInventoryRead), commonHandler(listServerGroup))
+
+	optionalAuth.GET("/server/:id/metrics", restScopeMiddleware(model.ScopeServerRead), commonHandler(getServerMetrics))
+	// 精简版：将 service 历史和服务器服务列表移到 optionalAuth，handler 内部已有 guest 逻辑（允许匿名查看 1d 数据）
+	optionalAuth.GET("/service/:id/history", restScopeMiddleware(model.ScopeServerRead), commonHandler(getServiceHistory))
+	optionalAuth.GET("/server/:id/service", restScopeMiddleware(model.ScopeServerRead), commonHandler(listServerServices))
+
+	// CSRF middleware applies group-wide. Safe methods short-circuit and
+	// PAT bearer requests bypass — so the only callers gated are
+	// cookie-JWT POST/PATCH/PUT/DELETE, which is exactly the H6 surface.
+	auth := api.Group("", authMw, csrfMiddleware())
+
+	// 「自我管理」类端点 — 显式禁止 PAT 访问（避免 PAT 自我提权链）。
+	patForbidden := restPATForbiddenMiddleware()
+	auth.POST("/refresh-token", patForbidden, authMiddleware.RefreshHandler)
+	auth.POST("/logout", patForbidden, commonHandler(logoutHandler))
+	auth.GET("/profile", patForbidden, commonHandler(getProfile))
+	auth.POST("/profile", patForbidden, commonHandler(updateProfile))
+	auth.GET("/api-tokens", patForbidden, commonHandler(listAPITokens))
+	auth.POST("/api-tokens", patForbidden, commonHandler(createAPIToken))
+	auth.DELETE("/api-tokens/:id", patForbidden, commonHandler(deleteAPIToken))
+
+	// 资源族划分：
+	//   - nezha:inventory:* —— 对“服务器台账”的枚举与删除（列出 server / server-group、
+	//     删除 server / server-group）。这是管理后台清单管理动作。
+	//   - nezha:server:*    —— 对已知 server 的运行态操作（编辑名称、分组等）。
+	auth.GET("/server", restScopeMiddleware(model.ScopeInventoryRead), listHandler(listServer))
+	auth.PATCH("/server/:id", restScopeMiddleware(model.ScopeServerWrite), commonHandler(updateServer))
+	auth.POST("/batch-delete/server", restScopeMiddleware(model.ScopeInventoryDelete), commonHandler(batchDeleteServer))
+	auth.POST("/server-group", restScopeMiddleware(model.ScopeServerWrite), commonHandler(createServerGroup))
+	auth.PATCH("/server-group/:id", restScopeMiddleware(model.ScopeServerWrite), commonHandler(updateServerGroup))
+	auth.POST("/batch-delete/server-group", restScopeMiddleware(model.ScopeInventoryDelete), commonHandler(batchDeleteServerGroup))
+
+	// service monitor
+	auth.GET("/service", restScopeMiddleware(model.ScopeInventoryRead), commonHandler(showService))
+	auth.GET("/service/list", restScopeMiddleware(model.ScopeInventoryRead), listHandler(listService))
+	auth.POST("/service", restScopeMiddleware(model.ScopeServerWrite), commonHandler(createService))
+	auth.PATCH("/service/:id", restScopeMiddleware(model.ScopeServerWrite), commonHandler(updateService))
+	auth.POST("/batch-delete/service", restScopeMiddleware(model.ScopeInventoryDelete), commonHandler(batchDeleteService))
+	auth.GET("/service/server", restScopeMiddleware(model.ScopeInventoryRead), commonHandler(listServerWithServices))
+
+	// 通知管理
+	auth.GET("/notification-group", restScopeMiddleware(model.ScopeNotificationGroupRead), commonHandler(listNotificationGroup))
+	auth.POST("/notification-group", restScopeMiddleware(model.ScopeNotificationGroupWrite), commonHandler(createNotificationGroup))
+	auth.PATCH("/notification-group/:id", restScopeMiddleware(model.ScopeNotificationGroupWrite), commonHandler(updateNotificationGroup))
+	auth.POST("/batch-delete/notification-group", restScopeMiddleware(model.ScopeNotificationGroupDelete), commonHandler(batchDeleteNotificationGroup))
+
+	auth.GET("/notification", restScopeMiddleware(model.ScopeNotificationRead), listHandler(listNotification))
+	auth.POST("/notification", restScopeMiddleware(model.ScopeNotificationWrite), commonHandler(createNotification))
+	auth.PATCH("/notification/:id", restScopeMiddleware(model.ScopeNotificationWrite), commonHandler(updateNotification))
+	auth.POST("/batch-delete/notification", restScopeMiddleware(model.ScopeNotificationDelete), commonHandler(batchDeleteNotification))
+
+	// 告警规则
+	auth.GET("/alert-rule", restScopeMiddleware(model.ScopeAlertRuleRead), listHandler(listAlertRule))
+	auth.POST("/alert-rule", restScopeMiddleware(model.ScopeAlertRuleWrite), commonHandler(createAlertRule))
+	auth.PATCH("/alert-rule/:id", restScopeMiddleware(model.ScopeAlertRuleWrite), commonHandler(updateAlertRule))
+	auth.POST("/batch-delete/alert-rule", restScopeMiddleware(model.ScopeAlertRuleDelete), commonHandler(batchDeleteAlertRule))
+
+	// DDNS 配置
+	auth.GET("/ddns", restScopeMiddleware(model.ScopeDDNSRead), listHandler(listDDNS))
+	auth.GET("/ddns/providers", restScopeMiddleware(model.ScopeDDNSRead), commonHandler(listProviders))
+	auth.POST("/ddns", restScopeMiddleware(model.ScopeDDNSWrite), commonHandler(createDDNS))
+	auth.PATCH("/ddns/:id", restScopeMiddleware(model.ScopeDDNSWrite), commonHandler(updateDDNS))
+	auth.POST("/batch-delete/ddns", restScopeMiddleware(model.ScopeDDNSDelete), commonHandler(batchDeleteDDNS))
+
+	// 管理员资源 — 仅 nezha:* / nezha:admin:* 持有者可调（adminHandler 进一步校验 user.Role）。
+	auth.GET("/user", restScopeMiddleware(model.ScopeAdminAll), adminHandler(listUser))
+	auth.POST("/user", restScopeMiddleware(model.ScopeAdminAll), adminHandler(createUser))
+	auth.POST("/batch-delete/user", restScopeMiddleware(model.ScopeAdminAll), adminHandler(batchDeleteUser))
+	auth.GET("/waf", restScopeMiddleware(model.ScopeAdminAll), pAdminHandler(listBlockedAddress))
+	auth.POST("/batch-delete/waf", restScopeMiddleware(model.ScopeAdminAll), adminHandler(batchDeleteBlockedAddress))
+	auth.GET("/online-user", restScopeMiddleware(model.ScopeAdminAll), pAdminHandler(listOnlineUser))
+	auth.POST("/online-user/batch-block", restScopeMiddleware(model.ScopeAdminAll), adminHandler(batchBlockOnlineUser))
+	auth.PATCH("/setting", restScopeMiddleware(model.ScopeAdminAll), adminHandler(updateConfig))
+	auth.POST("/maintenance", restScopeMiddleware(model.ScopeAdminAll), adminHandler(runMaintenance))
+
+	r.NoRoute(fallbackToFrontend(frontendDist))
+}
+
+func recordPath(c *gin.Context) {
+	url := c.Request.URL.String()
+	for _, p := range c.Params {
+		url = strings.Replace(url, p.Value, ":"+p.Key, 1)
+	}
+	c.Set("MatchedPath", url)
+}
+
+func newErrorResponse(err error) model.CommonResponse[any] {
+	return model.CommonResponse[any]{
+		Success: false,
+		Error:   err.Error(),
+	}
+}
+
+type handlerFunc[T any] func(c *gin.Context) (T, error)
+type pHandlerFunc[S ~[]E, E any] func(c *gin.Context) (*model.Value[S], error)
+
+// There are many error types in gorm, so create a custom type to represent all
+// gorm errors here instead
+type gormError struct {
+	msg string
+	a   []any
+}
+
+func newGormError(format string, args ...any) error {
+	return &gormError{
+		msg: format,
+		a:   args,
+	}
+}
+
+func (ge *gormError) Error() string {
+	return fmt.Sprintf(ge.msg, ge.a...)
+}
+
+type wsError struct {
+	msg string
+	a   []any
+}
+
+func newWsError(format string, args ...any) error {
+	return &wsError{
+		msg: format,
+		a:   args,
+	}
+}
+
+func (we *wsError) Error() string {
+	return fmt.Sprintf(we.msg, we.a...)
+}
+
+var errNoop = errors.New("wrote")
+
+func commonHandler[T any](handler handlerFunc[T]) func(*gin.Context) {
+	return func(c *gin.Context) {
+		handle(c, handler)
+	}
+}
+
+func adminHandler[T any](handler handlerFunc[T]) func(*gin.Context) {
+	return func(c *gin.Context) {
+		auth, ok := c.Get(model.CtxKeyAuthorizedUser)
+		if !ok {
+			c.JSON(http.StatusOK, newErrorResponse(singleton.Localizer.ErrorT("unauthorized")))
+			return
+		}
+
+		user := *auth.(*model.User)
+		if !user.Role.IsAdmin() {
+			c.JSON(http.StatusOK, newErrorResponse(singleton.Localizer.ErrorT("permission denied")))
+			return
+		}
+
+		handle(c, handler)
+	}
+}
+
+func handle[T any](c *gin.Context, handler handlerFunc[T]) {
+	data, err := handler(c)
+	if err == nil {
+		c.JSON(http.StatusOK, model.CommonResponse[T]{Success: true, Data: data})
+		return
+	}
+	switch err.(type) {
+	case *gormError:
+		log.Printf("NEZHA>> gorm error: %v", err)
+		c.JSON(http.StatusOK, newErrorResponse(singleton.Localizer.ErrorT("database error")))
+		return
+	case *wsError:
+		// Connection is upgraded to WebSocket, so c.Writer is no longer usable
+		if msg := err.Error(); msg != "" {
+			log.Printf("NEZHA>> websocket error: %v", err)
+		}
+		return
+	default:
+		if !errors.Is(err, errNoop) {
+			c.JSON(http.StatusOK, newErrorResponse(err))
+		}
+		return
+	}
+}
+
+func listHandler[S ~[]E, E model.CommonInterface](handler handlerFunc[S]) func(*gin.Context) {
+	return func(c *gin.Context) {
+		data, err := handler(c)
+		if err != nil {
+			c.JSON(http.StatusOK, newErrorResponse(err))
+			return
+		}
+
+		filtered := filter(c, data)
+		c.JSON(http.StatusOK, model.CommonResponse[S]{Success: true, Data: model.SearchByIDCtx(c, filtered)})
+	}
+}
+
+func pCommonHandler[S ~[]E, E any](handler pHandlerFunc[S, E]) func(*gin.Context) {
+	return func(c *gin.Context) {
+		data, err := handler(c)
+		if err != nil {
+			c.JSON(http.StatusOK, newErrorResponse(err))
+			return
+		}
+
+		c.JSON(http.StatusOK, model.PaginatedResponse[S, E]{Success: true, Data: data})
+	}
+}
+
+func pAdminHandler[S ~[]E, E any](handler pHandlerFunc[S, E]) func(*gin.Context) {
+	return func(c *gin.Context) {
+		auth, ok := c.Get(model.CtxKeyAuthorizedUser)
+		if !ok {
+			c.JSON(http.StatusOK, newErrorResponse(singleton.Localizer.ErrorT("unauthorized")))
+			return
+		}
+		user := *auth.(*model.User)
+		if !user.Role.IsAdmin() {
+			c.JSON(http.StatusOK, newErrorResponse(singleton.Localizer.ErrorT("permission denied")))
+			return
+		}
+
+		data, err := handler(c)
+		if err != nil {
+			c.JSON(http.StatusOK, newErrorResponse(err))
+			return
+		}
+
+		c.JSON(http.StatusOK, model.PaginatedResponse[S, E]{Success: true, Data: data})
+	}
+}
+
+func filter[S ~[]E, E model.CommonInterface](ctx *gin.Context, s S) S {
+	return slices.DeleteFunc(s, func(e E) bool {
+		return !e.HasPermission(ctx)
+	})
+}
+
+func getUid(c *gin.Context) uint64 {
+	user, _ := c.MustGet(model.CtxKeyAuthorizedUser).(*model.User)
+	return user.ID
+}
+
+func fallbackToFrontend(frontendDist fs.FS) func(*gin.Context) {
+	serveFile := func(c *gin.Context, name string, file fs.File, customStatusCode int) bool {
+		defer file.Close()
+		fileStat, err := file.Stat()
+		if err != nil {
+			return false
+		}
+		if fileStat.IsDir() {
+			return false
+		}
+		readSeeker, ok := file.(io.ReadSeeker)
+		if !ok {
+			return false
+		}
+		http.ServeContent(utils.NewGinCustomWriter(c, customStatusCode), c.Request, name, fileStat.ModTime(), readSeeker)
+		return true
+	}
+
+	checkLocalFileOrFs := func(c *gin.Context, frontendFS fs.FS, templateRoot, filePath string, customStatusCode int) bool {
+		if filePath != "" {
+			localRoot, err := os.OpenRoot(templateRoot)
+			if err == nil {
+				defer localRoot.Close()
+				if file, err := localRoot.Open(filePath); err == nil && serveFile(c, filePath, file, customStatusCode) {
+					return true
+				}
+			}
+		}
+
+		if !fs.ValidPath(filePath) {
+			return false
+		}
+		templateFS, err := fs.Sub(frontendFS, templateRoot)
+		if err != nil {
+			return false
+		}
+		file, err := templateFS.Open(filePath)
+		if err != nil {
+			return false
+		}
+		if serveFile(c, filePath, file, customStatusCode) {
+			return true
+		}
+		return false
+	}
+
+	// 精简版前端路由白名单（恢复 notification/notification-group/alert-rule）
+	frontendPageUrlRegistry := []*regexp.Regexp{
+		// 用户端前端
+		regexp.MustCompile(`^/$`),
+		regexp.MustCompile(`^/server/\d*$`),
+		// 管理端前端
+		regexp.MustCompile(`^/dashboard/$`),
+		regexp.MustCompile(`^/dashboard/login$`),
+		regexp.MustCompile(`^/dashboard/service$`),
+		regexp.MustCompile(`^/dashboard/ddns$`),
+		regexp.MustCompile(`^/dashboard/server-group$`),
+		regexp.MustCompile(`^/dashboard/notification$`),
+		regexp.MustCompile(`^/dashboard/notification-group$`),
+		regexp.MustCompile(`^/dashboard/alert-rule$`),
+		regexp.MustCompile(`^/dashboard/profile$`),
+		regexp.MustCompile(`^/dashboard/settings$`),
+		regexp.MustCompile(`^/dashboard/settings/user$`),
+		regexp.MustCompile(`^/dashboard/settings/online-user$`),
+		regexp.MustCompile(`^/dashboard/settings/waf$`),
+		regexp.MustCompile(`^/dashboard/settings/api-tokens$`),
+	}
+
+	getFallbackStatusCode := func(path string) int {
+		for _, reg := range frontendPageUrlRegistry {
+			if reg.MatchString(path) {
+				return http.StatusOK
+			}
+		}
+		return http.StatusNotFound
+	}
+
+	return func(c *gin.Context) {
+		if strings.HasPrefix(c.Request.URL.Path, "/api") {
+			c.JSON(http.StatusNotFound, newErrorResponse(errors.New("404 Not Found")))
+			return
+		}
+
+		// /dashboard 重定向到 /dashboard/
+		if c.Request.URL.Path == "/dashboard" {
+			c.Redirect(http.StatusMovedPermanently, "/dashboard/")
+			return
+		}
+
+		fallbackStatusCode := getFallbackStatusCode(c.Request.URL.Path)
+		if strings.HasPrefix(c.Request.URL.Path, "/dashboard/") {
+			stripPath := strings.TrimPrefix(c.Request.URL.Path, "/dashboard/")
+			if checkLocalFileOrFs(c, frontendDist, singleton.Conf.AdminTemplate, stripPath, http.StatusOK) {
+				return
+			}
+			if !checkLocalFileOrFs(c, frontendDist, singleton.Conf.AdminTemplate, "index.html", fallbackStatusCode) {
+				c.JSON(http.StatusNotFound, newErrorResponse(errors.New("404 Not Found")))
+			}
+			return
+		}
+		stripPath := strings.TrimPrefix(c.Request.URL.Path, "/")
+		if checkLocalFileOrFs(c, frontendDist, singleton.Conf.UserTemplate, stripPath, http.StatusOK) {
+			return
+		}
+		if !checkLocalFileOrFs(c, frontendDist, singleton.Conf.UserTemplate, "index.html", fallbackStatusCode) {
+			c.JSON(http.StatusNotFound, newErrorResponse(errors.New("404 Not Found")))
+		}
+	}
+}
