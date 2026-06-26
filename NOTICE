@@ -1,0 +1,43 @@
+Nezha Lite
+Copyright 2024 Nezha Lite Contributors
+
+This product is derived from Nezha Monitoring (https://github.com/nezhahq/nezha)
+Copyright 2020 naiba
+Licensed under the Apache License, Version 2.0
+
+Modifications from the original Nezha Monitoring project:
+
+Agent:
+- Removed: interactive edit command, auto-update (go-github-selfupdate),
+  remote config push, server transfer, IOStream (terminal/file manager/
+  intranet penetration), MCP, urfave/cli framework dependency
+- Added: SSRF protection (probe_guard.go), ICMP rate limiting,
+  goroutine leak fix for gRPC unary calls, GitHub proxy acceleration
+  for install scripts, self-contained service command restoration
+- Changed: switched from urfave/cli to stdlib flag for CLI parsing,
+  cleaned go.mod residual dependencies, restored nezhahq/service for
+  systemd/Windows Service/launchd management
+
+Dashboard:
+- Removed: OAuth2 authentication, alert notifications (Telegram/DingTalk/
+  Bark/Email), IOStream server-side, MCP server, command execution,
+  server transfer, forced update, NAT traversal, terminal access,
+  file manager, frp integration
+- Added: modernc.org/sqlite (pure Go SQLite, no CGO required),
+  command-line arguments restoration (-v, -c, -db)
+- Changed: simplified permissions controller, cleaned task model,
+  removed unused RPC methods
+
+Install Scripts:
+- Added: self-contained install.sh and install.ps1 for Agent,
+  self-contained install.sh for Dashboard with Docker support,
+  GitHub public proxy acceleration for China region
+- Changed: removed external script repository dependency (nezhahq/scripts),
+  removed Gitee mirror, replaced with GitHub public proxies
+
+Docker:
+- Added: multi-stage Dockerfile (frontend download -> Go compile -> runtime),
+  Dockerfile.prebuilt for pre-compiled binaries, docker-compose.yaml,
+  build-docker.ps1 for Windows cross-compile + Linux server packaging
+
+All modifications are licensed under the Apache License, Version 2.0.

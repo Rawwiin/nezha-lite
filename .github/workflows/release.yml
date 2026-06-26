@@ -1,0 +1,198 @@
+# Nezha Lite 统一发布工作流
+# 推送 v* 格式的 tag 时触发，自动编译 Agent（20 平台）和 Dashboard（4 平台）并上传 GitHub Release
+#
+# 用法：
+#   git tag v1.0.0
+#   git push origin v1.0.0
+#
+# Agent：20 个平台组合（linux/windows/freebsd/darwin × 多架构）
+# Dashboard：4 个平台组合（linux/windows/darwin × amd64/arm64）
+#
+# 版本号说明：{{.Version}} 来自 git tag，与原版无关。
+# 例如推 v1.0.0 → Agent 和 Dashboard 版本号均为 "1.0.0"
+
+name: Build + Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  # ==================== Agent 编译 ====================
+  build-agent:
+    strategy:
+      fail-fast: true
+      matrix:
+        goos: [linux, windows, darwin, freebsd]
+        goarch: [amd64, arm64, 386]
+        include:
+          - goos: linux
+            goarch: 386
+          - goos: linux
+            goarch: s390x
+          - goos: linux
+            goarch: riscv64
+          - goos: linux
+            goarch: arm
+          - goos: linux
+            goarch: mips
+            gomips: softfloat
+          - goos: linux
+            goarch: mipsle
+            gomips: softfloat
+          - goos: linux
+            goarch: loong64
+          - goos: freebsd
+            goarch: arm
+        exclude:
+          - goos: darwin
+            goarch: 386
+
+    name: Build Agent (${{ matrix.goos }}/${{ matrix.goarch }})
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ^1.26.1
+
+      - name: Build Test
+        if: github.event_name != 'push' || !contains(github.ref, 'refs/tags/')
+        uses: goreleaser/goreleaser-action@v6
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          GOMIPS: ${{ matrix.gomips }}
+        with:
+          distribution: goreleaser
+          version: "~> v2"
+          args: build --single-target --clean --skip=validate --snapshot
+          workdir: agent
+
+      - name: Build
+        if: github.event_name == 'push' && contains(github.ref, 'refs/tags/')
+        uses: goreleaser/goreleaser-action@v6
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          GOMIPS: ${{ matrix.gomips }}
+        with:
+          distribution: goreleaser
+          version: "~> v2"
+          args: build --single-target --clean --skip=validate
+          workdir: agent
+
+      - name: Archive
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+        run: zip -jr agent-dist/nezha-agent_${GOOS}_${GOARCH}.zip agent/dist/*/*
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: nezha-agent_${{ matrix.goos }}_${{ matrix.goarch }}
+          path: ./agent-dist/nezha-agent_${{ matrix.goos }}_${{ matrix.goarch }}.zip
+
+  # ==================== Dashboard 编译 ====================
+  build-dashboard:
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - goos: linux
+            goarch: amd64
+          - goos: linux
+            goarch: arm64
+          - goos: windows
+            goarch: amd64
+          - goos: darwin
+            goarch: arm64
+
+    name: Build Dashboard (${{ matrix.goos }}/${{ matrix.goarch }})
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ^1.26.1
+
+      - name: Build Test
+        if: github.event_name != 'push' || !contains(github.ref, 'refs/tags/')
+        uses: goreleaser/goreleaser-action@v6
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+        with:
+          distribution: goreleaser
+          version: "~> v2"
+          args: build --single-target --clean --skip=validate --snapshot
+          workdir: nezha
+
+      - name: Build
+        if: github.event_name == 'push' && contains(github.ref, 'refs/tags/')
+        uses: goreleaser/goreleaser-action@v6
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+        with:
+          distribution: goreleaser
+          version: "~> v2"
+          args: build --single-target --clean --skip=validate
+          workdir: nezha
+
+      - name: Archive
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+        run: zip -jr dashboard-dist/nezha-dashboard_${GOOS}_${GOARCH}.zip nezha/dist/*/*
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: nezha-dashboard_${{ matrix.goos }}_${{ matrix.goarch }}
+          path: ./dashboard-dist/nezha-dashboard_${{ matrix.goos }}_${{ matrix.goarch }}.zip
+
+  # ==================== 发布 Release ====================
+  release:
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && contains(github.ref, 'refs/tags/')
+    needs: [build-agent, build-dashboard]
+    name: Release
+    steps:
+      - name: Download Agent artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: nezha-agent_*
+          merge-multiple: true
+          path: ./assets
+
+      - name: Download Dashboard artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: nezha-dashboard_*
+          merge-multiple: true
+          path: ./assets
+
+      - name: Checksum
+        run: sha256sum ./assets/*.zip | awk -F" |/" '{print $1, $NF}' > checksums.txt
+
+      - name: Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            checksums.txt
+            assets/*.zip
+          generate_release_notes: true

@@ -1,0 +1,40 @@
+# Nezha 精简版 Dashboard - 预编译二进制打包 Dockerfile
+# 用于在 Linux 服务器上将 Windows 交叉编译好的二进制打包成 Docker 镜像
+#
+# 用法（在 Linux 服务器上，将二进制和此 Dockerfile 放在同一目录）：
+#   docker build -f Dockerfile.prebuilt -t nezha-dashboard:latest .
+#
+# 多架构构建（需先分别编译 amd64 和 arm64 二进制）：
+#   docker buildx build --platform linux/amd64 -f Dockerfile.prebuilt -t nezha-dashboard:amd64 .
+#   docker buildx build --platform linux/arm64 -f Dockerfile.prebuilt -t nezha-dashboard:arm64 .
+
+FROM alpine:latest AS runtime
+
+# 安装运行时依赖：ca-certificates（HTTPS）、tzdata（时区）
+RUN apk add --no-cache ca-certificates tzdata && \
+    update-ca-certificates
+
+# 创建工作目录
+WORKDIR /dashboard
+RUN mkdir -p /dashboard/data
+
+# 复制预编译的二进制（从当前目录读取）
+# 交叉编译时二进制名：dashboard-linux-amd64 / dashboard-linux-arm64
+# 构建时通过 --build-arg 指定，默认 amd64
+ARG BINARY=dashboard-linux-amd64
+COPY ${BINARY} /dashboard/nezha-dashboard
+
+# 确保可执行
+RUN chmod +x /dashboard/nezha-dashboard
+
+# 暴露端口（HTTP + gRPC 复用）
+EXPOSE 8008
+
+# 数据卷：持久化 SQLite 数据库和配置
+VOLUME ["/dashboard/data"]
+
+# 时区设置
+ENV TZ=Asia/Shanghai
+
+# 入口点
+ENTRYPOINT ["/dashboard/nezha-dashboard"]

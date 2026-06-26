@@ -1,0 +1,23 @@
+# Git
+.git
+.gitignore
+
+# 文档
+*.md
+docs/
+
+# IDE
+.vscode
+.idea
+
+# 构建产物
+dist/
+*.exe
+*.zip
+
+# 测试
+*_test.go
+testdata/
+
+# 源码备份
+source/
