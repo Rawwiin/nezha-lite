@@ -94,7 +94,9 @@ jobs:
         env:
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
-        run: zip -jr agent-dist/nezha-agent_${GOOS}_${GOARCH}.zip agent/dist/*/*
+        run: |
+          mkdir -p agent-dist
+          zip -jr agent-dist/nezha-agent_${GOOS}_${GOARCH}.zip agent/dist/*/*
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
@@ -157,7 +159,9 @@ jobs:
         env:
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
-        run: zip -jr dashboard-dist/nezha-dashboard_${GOOS}_${GOARCH}.zip nezha/dist/*/*
+        run: |
+          mkdir -p dashboard-dist
+          zip -jr dashboard-dist/nezha-dashboard_${GOOS}_${GOARCH}.zip nezha/dist/*/*
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
