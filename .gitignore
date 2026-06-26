@@ -35,7 +35,8 @@ source/
 # ========================
 # Go
 # ========================
-vendor/
+# 只忽略 Go modules 根目录的 vendor/，不忽略源码中的 vendor 子包（如 agent/pkg/monitor/gpu/vendor/）
+/vendor/
 *.test
 *.out
 *.cover
@@ -73,3 +74,6 @@ temp/
 dist/
 build/
 release/
+
+
+

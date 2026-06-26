@@ -67,7 +67,7 @@ curl -L https://raw.githubusercontent.com/Rawwiin/nezha-lite/main/nezha/install.
 
 | 方式 | 说明 | 依赖 |
 |------|------|------|
-| **Docker** | 通过 docker-compose 编排，镜像从 DockerHub/GHCR 拉取 | Docker + Docker Compose |
+| **Docker** | 通过 docker-compose 编排，镜像从 GHCR 拉取 | Docker + Docker Compose |
 | **独立安装** | 直接下载二进制运行，注册为 systemd/openrc 服务 | 无额外依赖 |
 
 ### 中国地区加速
@@ -93,9 +93,9 @@ CN=true sudo ./nezha.sh
 脚本顶部可配置变量：
 
 ```bash
-# Docker 镜像（上传 DockerHub 后修改为自己的镜像名）
-Docker_IMG="rawwiin/nezha-lite"
-# 例如: Docker_IMG="rawwiin/nezha-lite:latest"
+# Docker 镜像（GHCR 镜像名，格式：ghcr.io/<用户名>/nezha-lite）
+Docker_IMG="ghcr.io/rawwiin/nezha-lite"
+# 例如: Docker_IMG="ghcr.io/rawwiin/nezha-lite:latest"
 
 # GitHub 仓库（用于下载 Release 二进制）
 GITHUB_REPO="Rawwiin/nezha-lite"
@@ -106,7 +106,7 @@ GITHUB_URL="github.com"
 
 ```bash
 # 使用自定义 Docker 镜像安装
-Docker_IMG="rawwiin/nezha-lite:latest" sudo ./nezha.sh
+Docker_IMG="ghcr.io/rawwiin/nezha-lite:latest" sudo ./nezha.sh
 ```
 
 > **与原版脚本的区别**：精简版脚本不依赖外部 `nezhahq/scripts` 仓库下载配置模板和服务文件，全部内联生成。移除了 Gitee 镜像和 `install_agent_v0` 跳转，改为 GitHub 公共代理方案。
@@ -251,14 +251,14 @@ tls: false
 debug: false
 EOF
 
-# 拉取镜像并运行
+# 拉取镜像并运行（GHCR 镜像，推 tag 后自动构建）
 docker run -d \
   --name nezha-dashboard \
   --restart always \
   -p 8008:8008 \
   -v $(pwd)/data:/dashboard/data \
   -e TZ=Asia/Shanghai \
-  rawwiin/nezha-lite:latest
+  ghcr.io/rawwiin/nezha-lite:latest
 ```
 
 或使用 docker-compose：
@@ -267,9 +267,13 @@ docker run -d \
 # 下载 docker-compose.yaml
 curl -L https://raw.githubusercontent.com/Rawwiin/nezha-lite/main/nezha/docker-compose.yaml -o docker-compose.yaml
 
-# 修改 image 为你的 DockerHub 镜像名，然后启动
+# 修改 image 为你的 GHCR 镜像名，然后启动
 docker compose up -d
 ```
+
+> 镜像地址格式：`ghcr.io/<GitHub用户名>/nezha-lite:<tag>`
+> 推送 `v*` tag 后 GitHub Actions 自动构建并推送 Docker 镜像到 GHCR，支持 `linux/amd64` 和 `linux/arm64` 双架构。
+> 首次推送后需在 GitHub → Packages 页面确认镜像可见性为 public。
 
 > 自行构建 Docker 镜像请参考 [build.md](build.md)。
 

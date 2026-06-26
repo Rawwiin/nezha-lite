@@ -1,15 +1,18 @@
 # Nezha 精简版 Dashboard docker-compose 示例
 # 使用方法：
-#   1. 修改下方 image 为你的 DockerHub 镜像名
+#   1. 修改下方 image 为你的 GHCR 镜像名
 #   2. 修改 data/config.yaml 配置文件
 #   3. docker compose up -d
+#
+# GHCR 镜像地址格式：ghcr.io/<GitHub用户名>/nezha-lite:<tag>
+# 首次使用前需在 GitHub → Packages 页面确认镜像可见性为 public
 
 version: "3"
 
 services:
   nezha-dashboard:
-    # 镜像地址（DockerHub）
-    image: rawwiin/nezha-lite:latest
+    # 镜像地址（GHCR）
+    image: ghcr.io/rawwiin/nezha-lite:latest
     container_name: nezha-dashboard
     restart: always
     # 端口映射：左侧宿主机端口，右侧容器端口（与 config.yaml 中 listen_port 一致）

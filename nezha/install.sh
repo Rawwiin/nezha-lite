@@ -14,8 +14,8 @@ NZ_DASHBOARD_SERVICERC="/etc/init.d/nezha-dashboard"
 GITHUB_REPO="Rawwiin/nezha-lite"
 GITHUB_URL="github.com"
 
-# Docker 镜像（DockerHub 镜像名）
-Docker_IMG="rawwiin/nezha-lite"
+# Docker 镜像（GHCR 镜像名，格式：ghcr.io/<用户名>/nezha-lite）
+Docker_IMG="ghcr.io/rawwiin/nezha-lite"
 
 # GitHub 公共代理列表（中国地区自动使用，用于加速 GitHub 文件下载）
 # 按优先级排列，脚本会依次尝试直到成功
