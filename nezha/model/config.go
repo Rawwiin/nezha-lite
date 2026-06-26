@@ -98,6 +98,9 @@ type Config struct {
 	// SettingResponse 按值拷贝 ConfigDashboard 触发 copylocks。
 	mcpEnabled atomic.Bool `koanf:"-" json:"-" yaml:"-"`
 
+	// oauth2 配置（精简版加固：支持环境变量注入 ClientSecret，详见 Config.Read）
+	Oauth2 map[string]*Oauth2Config `koanf:"oauth2" json:"oauth2,omitempty"`
+
 	// HTTPS 配置
 	HTTPS HTTPSConf `koanf:"https" json:"https"`
 
@@ -229,6 +232,20 @@ func (c *Config) Read(path string, frontendTemplates []FrontendTemplate) error {
 
 	c.mcpEnabled.Store(c.EnableMCP)
 
+	// 精简版加固：支持通过环境变量注入 OAuth2 ClientSecret，避免明文落盘
+	// 环境变量格式：NZ_OAUTH2_<PROVIDER>_CLIENT_SECRET（provider 大写）
+	// 例如：NZ_OAUTH2_GITHUB_CLIENT_SECRET=xxx
+	for provider, cfg := range c.Oauth2 {
+		if cfg == nil {
+			continue
+		}
+		envKey := "NZ_OAUTH2_" + strings.ToUpper(strings.ReplaceAll(provider, "-", "_")) + "_CLIENT_SECRET"
+		if envSecret := os.Getenv(envKey); envSecret != "" {
+			cfg.ClientSecret = envSecret
+			cfg.clientSecretFromEnv = true // 标记来自环境变量，save() 时不写回
+		}
+	}
+
 	return nil
 }
 
@@ -312,9 +329,27 @@ func (c *Config) patchYAMLField(key string, value any) error {
 
 func (c *Config) save() error {
 	c.EnableMCP = c.mcpEnabled.Load()
+
+	// 精简版加固：环境变量注入的 OAuth2 ClientSecret 不写回 config.yaml
+	// 序列化前临时清空，序列化后恢复
+	envSecrets := make(map[string]string)
+	for provider, cfg := range c.Oauth2 {
+		if cfg != nil && cfg.clientSecretFromEnv {
+			envSecrets[provider] = cfg.ClientSecret
+			cfg.ClientSecret = ""
+		}
+	}
+
 	data, err := yaml.Marshal(c)
 	if err != nil {
 		return err
+	}
+
+	// 恢复环境变量注入的 ClientSecret
+	for provider, secret := range envSecrets {
+		if cfg := c.Oauth2[provider]; cfg != nil {
+			cfg.ClientSecret = secret
+		}
 	}
 
 	return c.write(data)

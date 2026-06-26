@@ -1,0 +1,29 @@
+# Nezha 精简版 Dashboard docker-compose 示例
+# 使用方法：
+#   1. 修改下方 image 为你的 DockerHub 镜像名
+#   2. 修改 data/config.yaml 配置文件
+#   3. docker compose up -d
+
+version: "3"
+
+services:
+  nezha-dashboard:
+    # 镜像地址（DockerHub）
+    image: rawwiin/nezha-lite:latest
+    container_name: nezha-dashboard
+    restart: always
+    # 端口映射：左侧宿主机端口，右侧容器端口（与 config.yaml 中 listen_port 一致）
+    ports:
+      - "8008:8008"
+    # 数据卷：持久化配置和数据库
+    volumes:
+      - ./data:/dashboard/data
+    # 时区
+    environment:
+      - TZ=Asia/Shanghai
+    # 健康检查（可选）
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:8008/"]
+      interval: 30s
+      timeout: 5s
+      retries: 3

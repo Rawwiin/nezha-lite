@@ -1,84 +1,32 @@
+# Nezha Lite Dashboard GoReleaser 配置
+# 与原版区别：使用 modernc.org/sqlite（纯 Go），CGO_ENABLED=0，无需交叉编译工具链
 version: 2
 before:
   hooks:
     - go mod tidy -v
 builds:
-  - id: linux_arm64
+  - id: universal
     env:
-      - CGO_ENABLED=1
-      - CC=aarch64-linux-gnu-gcc
+      - CGO_ENABLED=0
     ldflags:
-      - -s -w
-      - -X github.com/nezhahq/nezha/service/singleton.Version={{.Version}}
-      - -extldflags "-static -fpic"
+      - -s -w -X github.com/nezhahq/nezha/service/singleton.Version={{.Version}}
     flags:
       - -trimpath
-      - -buildvcs=false
     tags:
-      - go_json
+      - modernc
     goos:
       - linux
-    goarch:
-      - arm64
-    main: ./cmd/dashboard
-    binary: dashboard-{{ .Os }}-{{ .Arch }}
-  - id: linux_amd64
-    env:
-      - CGO_ENABLED=1
-      - CC=x86_64-linux-gnu-gcc
-    ldflags:
-      - -s -w
-      - -X github.com/nezhahq/nezha/service/singleton.Version={{.Version}}
-      - -extldflags "-static -fpic"
-    flags:
-      - -trimpath
-      - -buildvcs=false
-    tags:
-      - go_json
-    goos:
-      - linux
-    goarch:
-      - amd64
-    main: ./cmd/dashboard
-    binary: dashboard-{{ .Os }}-{{ .Arch }}
-  - id: linux_s390x
-    env:
-      - CGO_ENABLED=1
-      - CC=s390x-linux-gnu-gcc
-    ldflags:
-      - -s -w
-      - -X github.com/nezhahq/nezha/service/singleton.Version={{.Version}}
-      - -extldflags "-static -fpic"
-    flags:
-      - -trimpath
-      - -buildvcs=false
-      - -mod=vendor
-    tags:
-      - go_json
-    goos:
-      - linux
-    goarch:
-      - s390x
-    main: ./cmd/dashboard
-    binary: dashboard-{{ .Os }}-{{ .Arch }}
-  - id: windows_amd64
-    env:
-      - CGO_ENABLED=1
-      - CC=x86_64-w64-mingw32-gcc
-    ldflags:
-      - -s -w
-      - -X github.com/nezhahq/nezha/service/singleton.Version={{.Version}}
-      - -extldflags "-static -fpic"
-    flags:
-      - -trimpath
-      - -buildvcs=false
-    tags:
-      - go_json
-    goos:
       - windows
+      - darwin
     goarch:
       - amd64
+      - arm64
+    ignore:
+      - goos: windows
+        goarch: arm64
+      - goos: darwin
+        goarch: amd64
     main: ./cmd/dashboard
-    binary: dashboard-{{ .Os }}-{{ .Arch }}
+    binary: nezha-dashboard
 snapshot:
-  version_template: "dashboard"
+  version_template: "nezha-dashboard"

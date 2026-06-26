@@ -1,5 +1,9 @@
 //go:build darwin
 
+// Modified by Nezha Lite for simplified agent functionality.
+// Original source: https://github.com/nezhahq/nezha
+// Licensed under the Apache License, Version 2.0
+
 package logger
 
 import (

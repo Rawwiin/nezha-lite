@@ -48,6 +48,10 @@ func routers(r *gin.Engine, frontendDist fs.FS) {
 	fallbackAuthMw := fallbackAuthMiddleware(authMiddleware)
 	fallbackAuth := api.Group("", fallbackAuthMw)
 	fallbackAuth.GET("/setting", commonHandler(listConfig))
+	// OAuth2 回调：无需认证（fallbackAuth），回调内部通过 state 校验 + JWT 签发完成登录
+	fallbackAuth.GET("/oauth2/callback", commonHandler(oauth2callback(authMiddleware)))
+	// OAuth2 跳转：无需认证（commonHandler），任意用户可发起 OAuth2 流程
+	api.GET("/oauth2/:provider", commonHandler(oauth2redirect))
 
 	jwtMw := authMiddleware.MiddlewareFunc()
 	patMw := apiTokenAuthMiddleware()
@@ -80,6 +84,8 @@ func routers(r *gin.Engine, frontendDist fs.FS) {
 	auth.GET("/api-tokens", patForbidden, commonHandler(listAPITokens))
 	auth.POST("/api-tokens", patForbidden, commonHandler(createAPIToken))
 	auth.DELETE("/api-tokens/:id", patForbidden, commonHandler(deleteAPIToken))
+	// OAuth2 解绑：需认证 + 禁止 PAT（避免 PAT 滥用解绑）
+	auth.POST("/oauth2/:provider/unbind", patForbidden, commonHandler(unbindOauth2))
 
 	// 资源族划分：
 	//   - nezha:inventory:* —— 对“服务器台账”的枚举与删除（列出 server / server-group、

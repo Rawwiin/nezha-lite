@@ -1,3 +1,7 @@
+// Modified by Nezha Lite for simplified dashboard functionality.
+// Original source: https://github.com/nezhahq/nezha
+// Licensed under the Apache License, Version 2.0
+
 package singleton
 
 import (
@@ -101,7 +105,7 @@ func InitDBFromPath(path string) error {
 	err = DB.AutoMigrate(model.Server{}, model.User{}, model.ServerGroup{}, model.ServerGroupServer{},
 		model.WAF{}, model.JWTSession{}, model.APIToken{}, model.Service{}, model.ServiceHistory{},
 		model.Transfer{}, model.Notification{}, model.NotificationGroup{}, model.NotificationGroupNotification{},
-		model.AlertRule{})
+		model.AlertRule{}, model.Oauth2Bind{})
 	if err != nil {
 		return err
 	}

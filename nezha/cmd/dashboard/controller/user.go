@@ -26,10 +26,19 @@ func getProfile(c *gin.Context) (*model.Profile, error) {
 	if !ok {
 		return nil, singleton.Localizer.ErrorT("unauthorized")
 	}
+	// 查询当前用户的 OAuth2 绑定列表
+	var ob []model.Oauth2Bind
+	if err := singleton.DB.Where("user_id = ?", auth.(*model.User).ID).Find(&ob).Error; err != nil {
+		return nil, newGormError("%v", err)
+	}
+	var obMap = make(map[string]string)
+	for _, v := range ob {
+		obMap[v.Provider] = v.OpenID
+	}
 	return &model.Profile{
 		User:       *auth.(*model.User),
 		LoginIP:    c.GetString(model.CtxKeyRealIPStr),
-		Oauth2Bind: make(map[string]string),
+		Oauth2Bind: obMap,
 	}, nil
 }
 
@@ -66,7 +75,14 @@ func updateProfile(c *gin.Context) (any, error) {
 	}
 
 	if pf.RejectPassword {
-		return nil, singleton.Localizer.ErrorT("you don't have any oauth2 bindings")
+		// 拒绝密码登录前，检查用户是否已绑定至少一个 OAuth2 账号，否则会锁定账户
+		var bindCount int64
+		if err := singleton.DB.Model(&model.Oauth2Bind{}).Where("user_id = ?", auth.(*model.User).ID).Count(&bindCount).Error; err != nil {
+			return nil, newGormError("%v", err)
+		}
+		if bindCount < 1 {
+			return nil, singleton.Localizer.ErrorT("you don't have any oauth2 bindings")
+		}
 	}
 
 	user.Username = pf.NewUsername

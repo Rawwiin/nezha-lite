@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/nezhahq/nezha/model"
+	"github.com/nezhahq/nezha/pkg/utils"
 )
 
 var Conf *ConfigClass
@@ -35,6 +36,8 @@ func InitConfigFromPath(path string) error {
 	}
 
 	Conf.updateIgnoredIPNotificationID()
+	// 填充 OAuth2 provider 名称列表，供前端显示登录按钮
+	Conf.Oauth2Providers = utils.MapKeysToSlice(Conf.Oauth2)
 	return nil
 }
 
