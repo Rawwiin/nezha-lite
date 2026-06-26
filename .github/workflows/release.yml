@@ -131,6 +131,23 @@ jobs:
         with:
           go-version: ^1.26.1
 
+      - name: Prepare frontend dists
+        run: |
+          cd nezha/cmd/dashboard
+          # 下载前端资源（版本与 frontend-templates.yaml 保持一致）
+          # admin-frontend
+          curl -L -o admin.zip https://github.com/nezhahq/admin-frontend/releases/download/v2.2.2/dist.zip
+          unzip -q admin.zip && mv dist admin-dist && rm admin.zip
+          # nezha-dash-v2
+          curl -L -o user.zip https://github.com/hamster1963/nezha-dash-v2/releases/download/v2.1.2/dist.zip
+          unzip -q user.zip && mv dist user-dist && rm user.zip
+          # nazhua
+          curl -L -o nazhua.zip https://github.com/hi2shark/nazhua/releases/download/v0.9.1/dist.zip
+          unzip -q nazhua.zip && mv dist nazhua-dist && rm nazhua.zip
+          # nezha-ascii
+          curl -L -o ascii.zip https://github.com/hamster1963/nezha-ascii/releases/download/v1.1.0/dist.zip
+          unzip -q ascii.zip && mv dist nezha-ascii-dist && rm ascii.zip
+
       - name: Build Test
         if: github.event_name != 'push' || !contains(github.ref, 'refs/tags/')
         uses: goreleaser/goreleaser-action@v6

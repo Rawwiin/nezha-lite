@@ -16,6 +16,8 @@ nezha/dashboard*
 data/
 *.db
 *.db-journal
+# 例外：geoip.db 是 go:embed 需要的占位文件，必须提交
+!nezha/pkg/geoip/geoip.db
 *.log
 *.tmp
 *.pid
