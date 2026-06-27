@@ -19,12 +19,14 @@ Agent:
   systemd/Windows Service/launchd management
 
 Dashboard:
-- Removed: OAuth2 authentication, alert notifications (Telegram/DingTalk/
+- Removed: alert notifications (Telegram/DingTalk/
   Bark/Email), IOStream server-side, MCP server, command execution,
   server transfer, forced update, NAT traversal, terminal access,
   file manager, frp integration
 - Added: modernc.org/sqlite (pure Go SQLite, no CGO required),
-  command-line arguments restoration (-v, -c, -db)
+  command-line arguments restoration (-v, -c, -db),
+  OAuth2 re-introduction with SSRF protection, response body size
+  limit, and DashboardHost enforcement for open redirect prevention
 - Changed: simplified permissions controller, cleaned task model,
   removed unused RPC methods
 
