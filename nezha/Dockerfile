@@ -1,19 +1,30 @@
 # Nezha 精简版 Dashboard Dockerfile
-# 多阶段构建：前端下载 → Go 编译 → 运行时镜像
+# 多阶段构建：前端构建/下载 → Go 编译 → 运行时镜像
 # 使用 modernc.org/sqlite（纯 Go），无需 CGO 和交叉编译工具链
 
-# ===== 阶段 1：下载前端资源 =====
+# ===== 阶段 1a：构建精简版管理端前端（本项目源码） =====
+# 使用本项目 admin-frontend/ 源码构建，已移除 cron/nat/terminal/server-transfer 等菜单
+FROM node:22-alpine AS admin-frontend-builder
+
+WORKDIR /build
+
+# 先复制 package.json 和 lock 文件利用 Docker 缓存层
+COPY admin-frontend/package.json admin-frontend/package-lock.json ./
+
+# 安装依赖
+RUN npm ci --no-audit --no-fund
+
+# 复制源码并构建
+COPY admin-frontend/ ./
+RUN npm run build
+
+# ===== 阶段 1b：下载其他前端资源 =====
 FROM alpine:latest AS frontend
 
 # 安装下载工具
 RUN apk add --no-cache curl unzip
 
 WORKDIR /build
-
-# 下载前端资源（版本与 frontend-templates.yaml 保持一致）
-# 管理端前端（admin-frontend）
-RUN curl -L -o admin.zip https://github.com/nezhahq/admin-frontend/releases/download/v2.2.2/dist.zip && \
-    unzip -q admin.zip && mv dist admin-dist && rm admin.zip
 
 # 用户端前端（nezha-dash-v2）
 RUN curl -L -o user.zip https://github.com/hamster1963/nezha-dash-v2/releases/download/v2.1.2/dist.zip && \
@@ -43,7 +54,9 @@ RUN go mod download
 COPY nezha/ ./
 
 # 将前端资源复制到 embed 目录
-COPY --from=frontend /build/admin-dist ./cmd/dashboard/admin-dist
+# 管理端前端：从本项目源码构建的精简版（无 cron/nat/terminal 等菜单）
+COPY --from=admin-frontend-builder /build/dist ./cmd/dashboard/admin-dist
+# 其他前端：从官方 release 下载
 COPY --from=frontend /build/user-dist ./cmd/dashboard/user-dist
 COPY --from=frontend /build/nazhua-dist ./cmd/dashboard/nazhua-dist
 COPY --from=frontend /build/nezha-ascii-dist ./cmd/dashboard/nezha-ascii-dist

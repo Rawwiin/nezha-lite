@@ -279,6 +279,9 @@ before_show_menu() {
 }
 
 # 生成 config.yaml 配置文件（内联，不依赖外部下载）
+# 预填 custom_code / custom_code_dashboard 精简版品牌标识，
+# 让用户安装后即可区分精简版与原版 nezha。
+# 用户可在管理端「设置」页面修改或清空这些字段。
 generate_config() {
     cat <<EOF
 site_name: "${nz_site_title}"
@@ -289,6 +292,48 @@ jwt_secret_key: ""
 debug: false
 enable_mcp: false
 tls: ${nz_tls}
+
+# 精简版品牌标识（用户端 nezha-dash-v2）
+# 在页面右下角显示"Nezha Lite"水印，可自行修改或删除
+custom_code: |
+  <style>
+  .nezha-lite-badge {
+    position: fixed;
+    bottom: 8px;
+    right: 12px;
+    font-size: 11px;
+    font-weight: 500;
+    letter-spacing: 0.5px;
+    opacity: 0.35;
+    pointer-events: none;
+    z-index: 9999;
+    user-select: none;
+    color: currentColor;
+  }
+  .nezha-lite-badge:hover { opacity: 0.6; }
+  </style>
+  <div class="nezha-lite-badge">Nezha Lite</div>
+
+# 精简版品牌标识（管理端 admin-frontend）
+# 在页面右下角显示"Nezha Lite"水印，可自行修改或删除
+custom_code_dashboard: |
+  <style>
+  .nezha-lite-badge {
+    position: fixed;
+    bottom: 8px;
+    right: 12px;
+    font-size: 11px;
+    font-weight: 500;
+    letter-spacing: 0.5px;
+    opacity: 0.35;
+    pointer-events: none;
+    z-index: 9999;
+    user-select: none;
+    color: currentColor;
+  }
+  .nezha-lite-badge:hover { opacity: 0.6; }
+  </style>
+  <div class="nezha-lite-badge">Nezha Lite</div>
 
 tsdb:
   data_path: "./data/tsdb"
