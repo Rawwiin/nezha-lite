@@ -68,13 +68,16 @@ func (s *NezhaHandler) RequestTask(stream pb.NezhaService_RequestTaskServer) err
 	var clientID uint64
 	var err error
 	if clientID, err = s.Auth.CheckRequestTask(stream.Context()); err != nil {
+		log.Printf("NEZHA>> RequestTask auth failed: %v", err)
 		return err
 	}
 
 	server, ok := attachRequestTaskStream(clientID, stream)
 	if !ok {
+		log.Printf("NEZHA>> RequestTask: server not found for clientID=%d, TaskStream not established", clientID)
 		return nil
 	}
+	log.Printf("NEZHA>> RequestTask: clientID=%d TaskStream established", clientID)
 	defer clearRequestTaskStream(clientID, server, stream)
 	var result *pb.TaskResult
 	for {

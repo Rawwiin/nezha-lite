@@ -323,6 +323,20 @@ func run() {
 
 		wCtx, wCancel := context.WithCancel(context.Background())
 
+		// 先建立任务流（RequestTask），再建立状态上报流
+		// 顺序与原版保持一致，避免通过 Cloudflare gRPC 代理时
+		// ReportSystemState 流先发送数据，导致 RequestTask 流开启超时
+		tasks, err := doWithTimeout(func() (pb.NezhaService_RequestTaskClient, error) {
+			return client.RequestTask(wCtx)
+		}, networkTimeOut)
+		if err != nil {
+			printf("请求任务失败: %v", err)
+			wCancel()
+			retry()
+			continue
+		}
+		go receiveTasksDaemon(tasks, wCancel)
+
 		// 建立状态上报流（心跳+状态）
 		reportState, err := doWithTimeout(func() (pb.NezhaService_ReportSystemStateClient, error) {
 			return client.ReportSystemState(wCtx)
@@ -334,17 +348,6 @@ func run() {
 			continue
 		}
 		go reportStateDaemon(reportState, wCancel)
-
-		tasks, err := doWithTimeout(func() (pb.NezhaService_RequestTaskClient, error) {
-			return client.RequestTask(wCtx)
-		}, networkTimeOut)
-		if err != nil {
-			printf("请求任务失败: %v", err)
-			wCancel()
-			retry()
-			continue
-		}
-		go receiveTasksDaemon(tasks, wCancel)
 
 		select {
 		case <-wCtx.Done():

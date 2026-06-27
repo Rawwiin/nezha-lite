@@ -282,13 +282,20 @@ func (ss *ServiceSentinel) stopServiceTicker(id uint64) {
 
 func (ss *ServiceSentinel) dispatchServiceTask(s *model.Service) {
 	servers := ServerShared.GetList()
+	dispatched := 0
 	for _, server := range servers {
 		if canDispatchServiceTask(s, server) {
 			task := s.PB()
 			if err := server.SendTask(task); err != nil {
-				// Agent 离线，正常情况，忽略
+				// Agent 离线或 TaskStream 未建立，记录日志便于排查
+				log.Printf("NEZHA>> dispatchServiceTask: service=%d server=%d send failed: %v", s.ID, server.ID, err)
+			} else {
+				dispatched++
 			}
 		}
+	}
+	if dispatched == 0 && len(servers) > 0 {
+		log.Printf("NEZHA>> dispatchServiceTask: service=%d dispatched=0/%d servers (check cover/skip/taskstream)", s.ID, len(servers))
 	}
 }
 
