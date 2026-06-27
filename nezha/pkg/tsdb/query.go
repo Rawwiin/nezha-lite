@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/VictoriaMetrics/VictoriaMetrics/lib/storage"
+	"github.com/nezhahq/nezha/model"
 )
 
 // QueryPeriod 查询时间段
@@ -60,27 +61,15 @@ func (p QueryPeriod) DownsampleInterval() time.Duration {
 	}
 }
 
-// DataPoint 服务历史数据点（保留供内部计算使用）
-type DataPoint struct {
-	Timestamp int64
-	Delay     float64
-	Status    uint8
-}
-
-// MetricDataPoint 服务器监控指标数据点
-type MetricDataPoint struct {
-	Timestamp int64
-	Value     float64
-}
-
-// ServiceHistorySummary 服务历史统计摘要（保留供内部计算使用）
-type ServiceHistorySummary struct {
-	TotalUp   uint64
-	TotalDown uint64
-	UpPercent float32
-	AvgDelay  float64
-	DataPoints []DataPoint
-}
+// 类型别名，与 model 包中的类型保持一致
+// 精简版保留这些别名供 TSDB 查询结果使用
+type (
+	DataPoint             = model.DataPoint
+	ServiceHistorySummary = model.ServiceHistorySummary
+	ServerServiceStats    = model.ServerServiceStats
+	ServiceHistoryResult  = model.ServiceHistoryResponse
+	MetricDataPoint       = model.ServerMetricsDataPoint
+)
 
 type rawDataPoint struct {
 	timestamp int64
@@ -89,7 +78,6 @@ type rawDataPoint struct {
 	hasDelay  bool
 	hasStatus bool
 }
-
 
 func calculateStats(points []rawDataPoint, downsampleInterval time.Duration) ServiceHistorySummary {
 	if len(points) == 0 {
@@ -310,3 +298,307 @@ func (db *TSDB) QueryServerMetrics(serverID uint64, metric MetricType, period Qu
 	return downsampleMetrics(points, period.DownsampleInterval(), isCumulativeMetric(metric)), nil
 }
 
+// QueryServiceHistory 查询指定服务监控的历史数据（按服务器分组）
+// 精简版从原版恢复此方法，TSDB 启用时从 TSDB 查询 service 历史
+func (db *TSDB) QueryServiceHistory(serviceID uint64, period QueryPeriod) (*ServiceHistoryResult, error) {
+	db.mu.RLock()
+	defer db.mu.RUnlock()
+	if db.closed {
+		return nil, fmt.Errorf("TSDB is closed")
+	}
+
+	now := time.Now()
+	tr := storage.TimeRange{
+		MinTimestamp: now.Add(-period.Duration()).UnixMilli(),
+		MaxTimestamp: now.UnixMilli(),
+	}
+
+	serviceIDStr := strconv.FormatUint(serviceID, 10)
+
+	// 查询延迟数据和状态数据
+	delayData, err := db.queryMetricByServiceID(MetricServiceDelay, serviceIDStr, tr)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query delay data: %w", err)
+	}
+	statusData, err := db.queryMetricByServiceID(MetricServiceStatus, serviceIDStr, tr)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query status data: %w", err)
+	}
+
+	result := &ServiceHistoryResult{
+		ServiceID: serviceID,
+		Servers:   make([]ServerServiceStats, 0),
+	}
+
+	// 合并延迟和状态数据
+	serverDataMap := make(map[uint64]map[int64]*rawDataPoint)
+	for serverID, points := range delayData {
+		if serverDataMap[serverID] == nil {
+			serverDataMap[serverID] = make(map[int64]*rawDataPoint)
+		}
+		for _, p := range points {
+			serverDataMap[serverID][p.timestamp] = &rawDataPoint{
+				timestamp: p.timestamp,
+				value:     p.value,
+				hasDelay:  true,
+			}
+		}
+	}
+	for serverID, points := range statusData {
+		if serverDataMap[serverID] == nil {
+			serverDataMap[serverID] = make(map[int64]*rawDataPoint)
+		}
+		for _, p := range points {
+			if existing, ok := serverDataMap[serverID][p.timestamp]; ok {
+				existing.status = p.value
+				existing.hasStatus = true
+			} else {
+				serverDataMap[serverID][p.timestamp] = &rawDataPoint{
+					timestamp: p.timestamp,
+					status:    p.value,
+					hasStatus: true,
+				}
+			}
+		}
+	}
+
+	for serverID, pointsMap := range serverDataMap {
+		points := make([]rawDataPoint, 0, len(pointsMap))
+		for _, p := range pointsMap {
+			points = append(points, *p)
+		}
+		stats := calculateStats(points, period.DownsampleInterval())
+		result.Servers = append(result.Servers, ServerServiceStats{
+			ServerID: serverID,
+			Stats:    stats,
+		})
+	}
+
+	sort.Slice(result.Servers, func(i, j int) bool {
+		return result.Servers[i].ServerID < result.Servers[j].ServerID
+	})
+
+	return result, nil
+}
+
+// QueryServiceHistoryByServerID 查询指定服务器的所有服务监控历史
+// 精简版从原版恢复此方法，用于服务器详情页展示服务监控数据
+func (db *TSDB) QueryServiceHistoryByServerID(serverID uint64, period QueryPeriod) (map[uint64]*ServiceHistoryResult, error) {
+	db.mu.RLock()
+	defer db.mu.RUnlock()
+	if db.closed {
+		return nil, fmt.Errorf("TSDB is closed")
+	}
+
+	now := time.Now()
+	tr := storage.TimeRange{
+		MinTimestamp: now.Add(-period.Duration()).UnixMilli(),
+		MaxTimestamp: now.UnixMilli(),
+	}
+
+	serverIDStr := strconv.FormatUint(serverID, 10)
+
+	delayData, err := db.queryMetricByServerID(MetricServiceDelay, serverIDStr, tr)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query delay data: %w", err)
+	}
+	statusData, err := db.queryMetricByServerID(MetricServiceStatus, serverIDStr, tr)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query status data: %w", err)
+	}
+
+	serviceDataMap := make(map[uint64]map[int64]*rawDataPoint)
+	for serviceID, points := range delayData {
+		if serviceDataMap[serviceID] == nil {
+			serviceDataMap[serviceID] = make(map[int64]*rawDataPoint)
+		}
+		for _, p := range points {
+			serviceDataMap[serviceID][p.timestamp] = &rawDataPoint{
+				timestamp: p.timestamp,
+				value:     p.value,
+				hasDelay:  true,
+			}
+		}
+	}
+	for serviceID, points := range statusData {
+		if serviceDataMap[serviceID] == nil {
+			serviceDataMap[serviceID] = make(map[int64]*rawDataPoint)
+		}
+		for _, p := range points {
+			if existing, ok := serviceDataMap[serviceID][p.timestamp]; ok {
+				existing.status = p.value
+				existing.hasStatus = true
+			} else {
+				serviceDataMap[serviceID][p.timestamp] = &rawDataPoint{
+					timestamp: p.timestamp,
+					status:    p.value,
+					hasStatus: true,
+				}
+			}
+		}
+	}
+
+	results := make(map[uint64]*ServiceHistoryResult)
+	for serviceID, pointsMap := range serviceDataMap {
+		points := make([]rawDataPoint, 0, len(pointsMap))
+		for _, p := range pointsMap {
+			points = append(points, *p)
+		}
+		stats := calculateStats(points, period.DownsampleInterval())
+		results[serviceID] = &ServiceHistoryResult{
+			ServiceID: serviceID,
+			Servers: []ServerServiceStats{{
+				ServerID: serverID,
+				Stats:    stats,
+			}},
+		}
+	}
+
+	return results, nil
+}
+
+// queryMetricByServiceID 按 service_id 标签查询指标数据
+func (db *TSDB) queryMetricByServiceID(metric MetricType, serviceID string, tr storage.TimeRange) (map[uint64][]metricPoint, error) {
+	tfs := storage.NewTagFilters()
+	if err := tfs.Add(nil, []byte(metric), false, false); err != nil {
+		return nil, err
+	}
+	if err := tfs.Add([]byte("service_id"), []byte(serviceID), false, false); err != nil {
+		return nil, err
+	}
+
+	deadline := uint64(time.Now().Add(30 * time.Second).Unix())
+	var search storage.Search
+	search.Init(nil, db.storage, []*storage.TagFilters{tfs}, tr, 100000, deadline)
+	defer search.MustClose()
+
+	result := make(map[uint64][]metricPoint)
+	var timestamps []int64
+	var values []float64
+
+	for search.NextMetricBlock() {
+		mbr := search.MetricBlockRef
+		var block storage.Block
+		mbr.BlockRef.MustReadBlock(&block)
+
+		mn := storage.GetMetricName()
+		if err := mn.Unmarshal(mbr.MetricName); err != nil {
+			log.Printf("NEZHA>> TSDB: failed to unmarshal metric name: %v", err)
+			storage.PutMetricName(mn)
+			continue
+		}
+
+		serverIDBytes := mn.GetTagValue("server_id")
+		if len(serverIDBytes) == 0 {
+			storage.PutMetricName(mn)
+			continue
+		}
+
+		serverID, err := strconv.ParseUint(string(serverIDBytes), 10, 64)
+		if err != nil {
+			log.Printf("NEZHA>> TSDB: failed to parse server_id %q: %v", string(serverIDBytes), err)
+			storage.PutMetricName(mn)
+			continue
+		}
+
+		storage.PutMetricName(mn)
+
+		if err := block.UnmarshalData(); err != nil {
+			log.Printf("NEZHA>> TSDB: failed to unmarshal block data: %v", err)
+			continue
+		}
+
+		timestamps = timestamps[:0]
+		values = values[:0]
+		timestamps, values = block.AppendRowsWithTimeRangeFilter(timestamps, values, tr)
+
+		for i := range timestamps {
+			result[serverID] = append(result[serverID], metricPoint{
+				timestamp: timestamps[i],
+				value:     values[i],
+			})
+		}
+	}
+
+	if err := search.Error(); err != nil {
+		return nil, err
+	}
+
+	return result, nil
+}
+
+// queryMetricByServerID 按 server_id 标签查询指标数据
+func (db *TSDB) queryMetricByServerID(metric MetricType, serverID string, tr storage.TimeRange) (map[uint64][]metricPoint, error) {
+	tfs := storage.NewTagFilters()
+	if err := tfs.Add(nil, []byte(metric), false, false); err != nil {
+		return nil, err
+	}
+	if err := tfs.Add([]byte("server_id"), []byte(serverID), false, false); err != nil {
+		return nil, err
+	}
+
+	deadline := uint64(time.Now().Add(30 * time.Second).Unix())
+	var search storage.Search
+	search.Init(nil, db.storage, []*storage.TagFilters{tfs}, tr, 100000, deadline)
+	defer search.MustClose()
+
+	result := make(map[uint64][]metricPoint)
+	var timestamps []int64
+	var values []float64
+
+	for search.NextMetricBlock() {
+		mbr := search.MetricBlockRef
+		var block storage.Block
+		mbr.BlockRef.MustReadBlock(&block)
+
+		mn := storage.GetMetricName()
+		if err := mn.Unmarshal(mbr.MetricName); err != nil {
+			log.Printf("NEZHA>> TSDB: failed to unmarshal metric name: %v", err)
+			storage.PutMetricName(mn)
+			continue
+		}
+
+		serviceIDBytes := mn.GetTagValue("service_id")
+		if len(serviceIDBytes) == 0 {
+			storage.PutMetricName(mn)
+			continue
+		}
+
+		serviceID, err := strconv.ParseUint(string(serviceIDBytes), 10, 64)
+		if err != nil {
+			log.Printf("NEZHA>> TSDB: failed to parse service_id %q: %v", string(serviceIDBytes), err)
+			storage.PutMetricName(mn)
+			continue
+		}
+
+		storage.PutMetricName(mn)
+
+		if err := block.UnmarshalData(); err != nil {
+			log.Printf("NEZHA>> TSDB: failed to unmarshal block data: %v", err)
+			continue
+		}
+
+		timestamps = timestamps[:0]
+		values = values[:0]
+		timestamps, values = block.AppendRowsWithTimeRangeFilter(timestamps, values, tr)
+
+		for i := range timestamps {
+			result[serviceID] = append(result[serviceID], metricPoint{
+				timestamp: timestamps[i],
+				value:     values[i],
+			})
+		}
+	}
+
+	if err := search.Error(); err != nil {
+		return nil, err
+	}
+
+	return result, nil
+}
+
+// metricPoint 内部使用的指标数据点
+type metricPoint struct {
+	timestamp int64
+	value     float64
+}

@@ -100,7 +100,33 @@ func getServiceHistory(c *gin.Context) (*model.ServiceHistoryResponse, error) {
 		return nil, singleton.Localizer.ErrorT("unauthorized: only 1d data available for guests")
 	}
 
+	// TSDB 启用时从 TSDB 查询，否则回退到 SQLite
+	if singleton.TSDBEnabled() {
+		return queryServiceHistoryFromTSDB(c, serviceID, period, service.Name)
+	}
 	return queryServiceHistoryFromDB(c, serviceID, period, service.Name)
+}
+
+// queryServiceHistoryFromTSDB 从 TSDB 查询服务监控历史
+func queryServiceHistoryFromTSDB(c *gin.Context, serviceID uint64, period tsdb.QueryPeriod, serviceName string) (*model.ServiceHistoryResponse, error) {
+	result, err := singleton.TSDBShared.QueryServiceHistory(serviceID, period)
+	if err != nil {
+		return nil, err
+	}
+
+	serverMap := singleton.ServerShared.GetList()
+	filtered := result.Servers[:0]
+	for i := range result.Servers {
+		server, ok := serverMap[result.Servers[i].ServerID]
+		if !ok || !userCanViewServer(c, server) {
+			continue
+		}
+		result.Servers[i].ServerName = server.Name
+		filtered = append(filtered, result.Servers[i])
+	}
+	result.Servers = filtered
+	result.ServiceName = serviceName
+	return result, nil
 }
 
 func queryServiceHistoryFromDB(c *gin.Context, serviceID uint64, period tsdb.QueryPeriod, serviceName string) (*model.ServiceHistoryResponse, error) {
@@ -220,7 +246,56 @@ func listServerServices(c *gin.Context) ([]*model.ServiceInfos, error) {
 		}
 	}
 
+	// TSDB 启用时从 TSDB 查询，否则回退到 SQLite
+	if singleton.TSDBEnabled() {
+		return queryServerServicesFromTSDB(serverID, server.Name, period, services)
+	}
 	return queryServerServicesFromDB(serverID, server.Name, period, services)
+}
+
+// queryServerServicesFromTSDB 从 TSDB 查询指定服务器的服务监控历史
+func queryServerServicesFromTSDB(serverID uint64, serverName string, period tsdb.QueryPeriod, services []*model.Service) ([]*model.ServiceInfos, error) {
+	historyResults, err := singleton.TSDBShared.QueryServiceHistoryByServerID(serverID, period)
+	if err != nil {
+		return nil, err
+	}
+
+	var result []*model.ServiceInfos
+	for _, service := range services {
+		// 检查 server 是否在 service 的覆盖范围内
+		if service.Cover == model.ServiceCoverAll {
+			if service.SkipServers[serverID] {
+				continue
+			}
+		} else {
+			if !service.SkipServers[serverID] {
+				continue
+			}
+		}
+
+		historyResult, ok := historyResults[service.ID]
+		if !ok || len(historyResult.Servers) == 0 {
+			continue
+		}
+
+		serverStats := historyResult.Servers[0]
+		infos := &model.ServiceInfos{
+			ServiceID:    service.ID,
+			ServerID:     serverID,
+			ServiceName:  service.Name,
+			ServerName:   serverName,
+			DisplayIndex: service.DisplayIndex,
+			CreatedAt:    make([]int64, len(serverStats.Stats.DataPoints)),
+			AvgDelay:     make([]float64, len(serverStats.Stats.DataPoints)),
+		}
+		for i, dp := range serverStats.Stats.DataPoints {
+			infos.CreatedAt[i] = dp.Timestamp
+			infos.AvgDelay[i] = dp.Delay
+		}
+		result = append(result, infos)
+	}
+
+	return result, nil
 }
 
 func queryServerServicesFromDB(serverID uint64, serverName string, period tsdb.QueryPeriod, services []*model.Service) ([]*model.ServiceInfos, error) {
